@@ -13,6 +13,21 @@ type Scripted struct {
 	Responses []Response
 	Seen      [][]Message
 	n         int
+	model     string
+}
+
+// SetModel implements ModelSwitch.
+func (s *Scripted) SetModel(name string) {
+	s.mu.Lock()
+	s.model = name
+	s.mu.Unlock()
+}
+
+// CurrentModel implements ModelSwitch.
+func (s *Scripted) CurrentModel() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.model
 }
 
 // Complete implements Client.

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,6 +20,8 @@ type OpenAI struct {
 	APIKey  string
 	Model   string
 	HTTP    *http.Client
+
+	mu sync.Mutex
 }
 
 // NewOpenAI returns a client. httpClient may be nil.
@@ -70,10 +73,24 @@ type apiTool struct {
 	} `json:"function"`
 }
 
+// SetModel implements ModelSwitch.
+func (c *OpenAI) SetModel(name string) {
+	c.mu.Lock()
+	c.Model = name
+	c.mu.Unlock()
+}
+
+// CurrentModel implements ModelSwitch.
+func (c *OpenAI) CurrentModel() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Model
+}
+
 // Complete implements Client.
 func (c *OpenAI) Complete(ctx context.Context, messages []Message, tools []ToolSpec, onDelta func(string)) (Response, error) {
 	payload := map[string]any{
-		"model":    c.Model,
+		"model":    c.CurrentModel(),
 		"messages": toAPIMessages(messages),
 		"stream":   true,
 	}
@@ -107,6 +124,9 @@ func (c *OpenAI) Complete(ctx context.Context, messages []Message, tools []ToolS
 		return Response{}, fmt.Errorf("request %s: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return Response{}, rateLimitError("openai", resp)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
 		msg := strings.TrimSpace(string(b))

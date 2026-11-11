@@ -54,3 +54,10 @@ type Response struct {
 type Client interface {
 	Complete(ctx context.Context, messages []Message, tools []ToolSpec, onDelta func(string)) (Response, error)
 }
+
+// ModelSwitch is implemented by clients that can change model mid-session.
+// The engine calls it from /model when no turn is running.
+type ModelSwitch interface {
+	SetModel(name string)
+	CurrentModel() string
+}

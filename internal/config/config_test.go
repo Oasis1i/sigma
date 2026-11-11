@@ -81,6 +81,33 @@ pattern = "bash:go test*"
 	}
 }
 
+func TestChatGPTDoesNotNeedBaseURL(t *testing.T) {
+	isolate(t)
+	ws := t.TempDir()
+	write(t, filepath.Join(ws, ".sigma.toml"), `
+provider = "chatgpt"
+model = "gpt-5.3-codex"
+models = ["gpt-5.3-codex", "gpt-5.2-codex"]
+allow_subscription_risk = true
+[subscription]
+claude = true
+`)
+	cfg, err := Load(Overrides{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider != "chatgpt" || cfg.BaseURL != "" || cfg.Model != "gpt-5.3-codex" {
+		t.Fatalf("%+v", cfg)
+	}
+	if !cfg.AllowSubscriptionRisk || !cfg.Subscription["claude"] || len(cfg.Models) != 2 {
+		t.Fatalf("%+v", cfg)
+	}
+	_, err = Load(Overrides{Workspace: ws, Provider: "nope", ProviderSet: true})
+	if err == nil || !strings.Contains(err.Error(), "unknown provider") {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestMissingModelAndBaseURL(t *testing.T) {
 	isolate(t)
 	ws := t.TempDir()

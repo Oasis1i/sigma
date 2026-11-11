@@ -33,7 +33,7 @@ import (
 	"golang.org/x/term"
 )
 
-const version = "0.3.0"
+const version = "0.4.0"
 
 const usageText = `sigma is a minimal coding agent.
 
@@ -42,6 +42,9 @@ Usage:
   sigma tui                     Bubble Tea TUI
   sigma gui                     local web UI on 127.0.0.1
   sigma --plain                 line REPL, even on a terminal
+  sigma login chatgpt          sign in with a ChatGPT subscription
+  sigma logout chatgpt         forget that subscription
+  sigma auth status            show who is signed in, never the tokens
   sigma -p "task"               run one task and exit
   sigma -p "task" --output json one JSON report on stdout
   sigma -p "task" --output jsonl
@@ -83,6 +86,12 @@ func run(args []string) error {
 	case "version":
 		fmt.Println("sigma", version)
 		return nil
+	case "login":
+		return loginCommand(args)
+	case "logout":
+		return logoutCommand(args)
+	case "auth":
+		return authCommand(args)
 	case "help":
 		args = append([]string{"-h"}, args...)
 		cmd = ""
@@ -104,6 +113,7 @@ func run(args []string) error {
 		promptStr    string
 		mode         string
 		model        string
+		providerName string
 		baseURL      string
 		apiKey       string
 		configPath   string
@@ -119,6 +129,7 @@ func run(args []string) error {
 	fs.StringVar(&promptStr, "p", "", "one-shot task; sigma exits when the model finishes")
 	fs.StringVar(&mode, "mode", "", "approval mode: plan, ask, or auto")
 	fs.StringVar(&model, "model", "", "model name")
+	fs.StringVar(&providerName, "provider", "", "provider: openai, chatgpt, claude, gemini, or grok")
 	fs.StringVar(&baseURL, "base-url", "", "OpenAI-compatible API root, for example https://api.openai.com/v1")
 	fs.StringVar(&apiKey, "api-key", "", "API key (prefer SIGMA_API_KEY so it is not in the process list)")
 	fs.StringVar(&configPath, "config", "", "config file to load instead of the user and workspace files")
@@ -171,6 +182,9 @@ func run(args []string) error {
 		case "model":
 			ov.ModelSet = true
 			ov.Model = model
+		case "provider":
+			ov.ProviderSet = true
+			ov.Provider = providerName
 		case "base-url":
 			ov.BaseURLSet = true
 			ov.BaseURL = baseURL
@@ -217,6 +231,7 @@ func run(args []string) error {
 	} else {
 		sess, err = session.Create(dir, map[string]string{
 			"model":     cfg.Model,
+			"provider":  cfg.Provider,
 			"base_url":  cfg.BaseURL,
 			"mode":      cfg.Approval,
 			"workspace": cfg.Workspace,
@@ -269,8 +284,13 @@ func run(args []string) error {
 		BashTimeout: time.Duration(cfg.BashTimeoutSec) * time.Second,
 		Todos:       tools.NewTodos(),
 	}
+	client, err := buildClient(cfg)
+	if err != nil {
+		sess.Close()
+		return err
+	}
 	ag := &agent.Agent{
-		Client:           provider.NewOpenAI(cfg.BaseURL, cfg.APIKey, cfg.Model, nil),
+		Client:           client,
 		Policy:           policy,
 		Session:          sess,
 		Messages:         messages,
@@ -308,6 +328,7 @@ func run(args []string) error {
 	eng := engine.New(ag, engine.Options{
 		SessionDir:  dir,
 		Model:       cfg.Model,
+		Models:      cfg.Models,
 		BaseURL:     cfg.BaseURL,
 		Workspace:   cfg.Workspace,
 		Verify:      cfg.Verify,
@@ -324,7 +345,11 @@ func run(args []string) error {
 		return fmt.Errorf("the TUI needs a terminal; use --plain otherwise")
 	}
 	if !useTUI {
-		fmt.Fprintf(os.Stderr, "sigma: %s @ %s\n", cfg.Model, cfg.BaseURL)
+		if cfg.BaseURL != "" {
+			fmt.Fprintf(os.Stderr, "sigma: %s %s @ %s\n", cfg.Provider, cfg.Model, cfg.BaseURL)
+		} else {
+			fmt.Fprintf(os.Stderr, "sigma: %s %s\n", cfg.Provider, cfg.Model)
+		}
 		if resumed {
 			fmt.Fprintf(os.Stderr, "sigma: resumed %s (%d messages)\n", sess.ID, len(messages))
 		} else {

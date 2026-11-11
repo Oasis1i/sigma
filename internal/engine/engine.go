@@ -22,6 +22,7 @@ import (
 type Options struct {
 	SessionDir string
 	Model      string
+	Models     []string
 	BaseURL    string
 	Workspace  string
 	// Verify is copied into a fresh system prompt on /clear.
@@ -45,6 +46,7 @@ type Engine struct {
 	ag        *agent.Agent
 	dir       string
 	model     string
+	models    []string
 	baseURL   string
 	workspace string
 	verify    []string
@@ -86,6 +88,7 @@ func New(ag *agent.Agent, opt Options) *Engine {
 		ag:         ag,
 		dir:        opt.SessionDir,
 		model:      opt.Model,
+		models:     append([]string(nil), opt.Models...),
 		baseURL:    opt.BaseURL,
 		workspace:  opt.Workspace,
 		verify:     append([]string(nil), opt.Verify...),
@@ -205,7 +208,57 @@ func (e *Engine) Mode() string {
 }
 
 // ModelName is the model from configuration, for the status bar.
-func (e *Engine) ModelName() string { return e.model }
+func (e *Engine) ModelName() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.model
+}
+
+// Models is the configured list /model offers. Empty means any name is accepted.
+func (e *Engine) Models() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]string, len(e.models))
+	copy(out, e.models)
+	return out
+}
+
+// SetModel changes the model used by the next turn. It refuses while a turn
+// is running. When Models was configured, name must be in that list.
+func (e *Engine) SetModel(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("usage: /model <name>")
+	}
+	if e.Busy() {
+		return fmt.Errorf("wait for the current turn to finish before changing model")
+	}
+	allowed := e.Models()
+	if len(allowed) > 0 && !containsModel(allowed, name) {
+		return fmt.Errorf("unknown model %q (configured: %s)", name, strings.Join(allowed, ", "))
+	}
+	if e.ag == nil || e.ag.Client == nil {
+		return fmt.Errorf("no model client")
+	}
+	sw, ok := e.ag.Client.(provider.ModelSwitch)
+	if !ok {
+		return fmt.Errorf("this provider cannot switch models")
+	}
+	sw.SetModel(name)
+	e.mu.Lock()
+	e.model = name
+	e.mu.Unlock()
+	return nil
+}
+
+func containsModel(list []string, name string) bool {
+	for _, item := range list {
+		if item == name {
+			return true
+		}
+	}
+	return false
+}
 
 // Workspace is the absolute workspace path.
 func (e *Engine) Workspace() string { return e.workspace }

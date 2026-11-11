@@ -10,7 +10,7 @@ It is a learning project. The interesting pieces (the engine boundary, the agent
 
 Sigma 是一个用 Go 写的极简编码代理。它通过 OpenAI 兼容接口调用模型，在本地工作区里读文件、搜索、精确替换、写入和执行 bash。
 
-交互默认是 TUI（`sigma` 或 `sigma tui`）：可滚动的对话、Markdown 回复、可折叠的工具块（`edit_file` 会显示 diff）、底部状态栏和输入框。`sigma gui` 在 `127.0.0.1` 上打开本地网页，URL 里带一次性 token，别人连上端口也驱动不了代理。`/mode plan` 时模型只能读仓库并用 `todo_write` 给出计划，你批准后才按之前的审批模式执行。`explore`（也叫 `task`）会启动一个只读子代理，在自己的上下文里搜索并返回摘要。配置文件里的 `[[mcp]]` 可以接 stdio 或 HTTP 的 MCP 服务，工具名是 `mcp__服务器__工具`，默认仍走审批。`/mcp` 列出连接状态。`--plain` 保留原来的逐行 REPL。`sigma -p "任务" --output json` 把这一轮收成一份 JSON（`jsonl` 则一行一个事件），方便脚本和评测。评测说明在 `eval/README.md`。
+交互默认是 TUI（`sigma` 或 `sigma tui`）：可滚动的对话、Markdown 回复、可折叠的工具块（`edit_file` 会显示 diff）、底部状态栏和输入框。`sigma gui` 在 `127.0.0.1` 上打开本地网页，URL 里带一次性 token，别人连上端口也驱动不了代理。`/mode plan` 时模型只能读仓库并用 `todo_write` 给出计划，你批准后才按之前的审批模式执行。`explore`（也叫 `task`）会启动一个只读子代理，在自己的上下文里搜索并返回摘要。配置文件里的 `[[mcp]]` 可以接 stdio 或 HTTP 的 MCP 服务，工具名是 `mcp__服务器__工具`，默认仍走审批。`/mcp` 列出连接状态。`--plain` 保留原来的逐行 REPL。`sigma -p "任务" --output json` 把这一轮收成一份 JSON（`jsonl` 则一行一个事件），方便脚本和评测。评测说明在 `eval/README.md`。`provider = "chatgpt"` 时用 `sigma login chatgpt` 登录 ChatGPT 订阅，不必再填 API key；令牌只写在 `~/.config/sigma/auth/`，权限 0600。
 
 在 `~/.config/sigma/config.toml` 或项目里的 `.sigma.toml` 中设置 `base_url`、`model` 和 `api_key`。没有默认模型；缺少模型或地址时程序会直接退出并说明原因。环境变量 `SIGMA_BASE_URL`、`SIGMA_MODEL`、`SIGMA_API_KEY` 以及对应的命令行参数会覆盖配置文件。
 
@@ -254,6 +254,39 @@ Sigma needs Go 1.25 because it links [github.com/modelcontextprotocol/go-sdk](ht
 
 If the model returns no native tool calls but writes a fenced `bash`, `sh`, or `shell` block, Sigma runs that block as `bash`. Other fences are ignored. The system prompt tells the model not to put examples in bash fences.
 
+## Subscription login
+
+`provider` selects who answers a turn.
+
+| provider | credential | endpoint |
+| --- | --- | --- |
+| `openai` | `api_key` or `SIGMA_API_KEY` | `base_url` + `/chat/completions` (the default) |
+| `chatgpt` | `sigma login chatgpt` | `https://chatgpt.com/backend-api/codex/responses` |
+
+```bash
+sigma login chatgpt
+sigma auth status
+sigma logout chatgpt
+```
+
+The browser opens the Codex “Sign in with ChatGPT” page (`auth.openai.com`, public client id `app_EMoamEEZ73f0CkXaXp7hrann`, PKCE S256, redirect `http://localhost:1455/auth/callback`). If you are on SSH or the port is taken, paste the callback URL. Tokens go to `~/.config/sigma/auth/chatgpt.json` with mode 0600. Sigma refreshes them about two minutes before expiry and once after a 401. It does not print them.
+
+ChatGPT needs no extra opt-in. A request sends `Authorization`, `chatgpt-account-id` (from the token), `originator: codex_cli_rs`, and `OpenAI-Beta: responses=experimental`. The body is the Responses API (`instructions`, `input`, `tools`, `stream`, `store: false`), not chat completions. A 429 includes the reset time from `Retry-After` or `x-codex-primary-reset-at`.
+
+`/model` shows or switches the model. A `models` list in the config limits the names that are accepted. The same command works in the TUI.
+
+Claude, Gemini, and Grok are named in the config so the opt-in flags parse, and `sigma login` can start their OAuth flows. Their request adapters are the next change. Claude, Gemini, and Grok OAuth refuse to start until `allow_subscription_risk = true` or `[subscription] <name> = true`. The warning is:
+
+> 警告：用第三方客户端调用该订阅可能违反服务商条款，账号有被封禁的风险。
+
+Suggested ChatGPT model names such as `gpt-5.3-codex` were taken from public Codex client builds. This tree has not confirmed them against a live subscription.
+
+Gemini's OAuth client id and secret are the installed-app credentials published by [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli). This repository does not vendor them: GitHub secret scanning rejects a push that contains that client id. Set `SIGMA_GEMINI_CLIENT_ID` and `SIGMA_GEMINI_CLIENT_SECRET` before `sigma login gemini`.
+
+### 中文
+
+`provider = "openai"` 仍走原来的 OpenAI 兼容接口。`provider = "chatgpt"` 用 Codex 的 “Sign in with ChatGPT”：`sigma login chatgpt`，令牌在 `~/.config/sigma/auth/chatgpt.json`（0600），过期前自动刷新，401 时再刷新一次。请求打到 `https://chatgpt.com/backend-api/codex/responses`，带 `chatgpt-account-id` 和 `originator: codex_cli_rs`。没有真实账号时，这些请求头只在本地假服务器上验证过。`/model` 切换模型。Claude、Gemini、Grok 的登录命令已经接上，但调用适配器在下一项；这三家登录前必须打开 `allow_subscription_risk`，并会打印上面那句中文警告。
+
 ## Sessions
 
 Each run appends JSONL under `~/.local/share/sigma/sessions/` (`$XDG_DATA_HOME/sigma/sessions` when that is set). Events are messages, tool calls, tool results, and approval decisions. `--resume` and `--continue` rebuild the conversation from `message` events. The API key is not written to the log.
@@ -266,7 +299,8 @@ internal/engine      command loop and the event stream the UIs share
 internal/tui         Bubble Tea transcript, approval prompt, status bar
 internal/gui         localhost page, token check, embedded assets
 internal/agent       one turn: model, tools, repeat
-internal/provider    OpenAI-compatible streaming client, plus a scripted fake
+internal/provider    OpenAI-compatible client, ChatGPT Responses client, scripted fake
+internal/auth        subscription OAuth (PKCE) and 0600 token files
 internal/tools       the six tools
 internal/approval    deny / ask / allow policy
 internal/sandbox     local process, or docker, for bash
