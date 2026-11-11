@@ -17,6 +17,7 @@ const SlashHelp = `Commands:
   /clear                start a new session
   /undo                 restore the previous git checkpoint
   /mcp                  list MCP servers and tools
+  /model [name]         show or switch the model
   /exit, /quit          leave
 `
 
@@ -70,6 +71,19 @@ func (e *Engine) ApplySlash(line string) (SlashEffect, error) {
 		return SlashEffect{Notice: "new session " + id, Rebuild: true}, nil
 	case "/undo":
 		return e.undo()
+	case "/model":
+		if len(fields) == 1 {
+			list := e.Models()
+			if len(list) == 0 {
+				return SlashEffect{Notice: "model: " + e.ModelName()}, nil
+			}
+			return SlashEffect{Notice: "model: " + e.ModelName() + "\navailable: " + strings.Join(list, ", ")}, nil
+		}
+		name := strings.Join(fields[1:], " ")
+		if err := e.SetModel(name); err != nil {
+			return SlashEffect{}, err
+		}
+		return SlashEffect{Notice: "model: " + e.ModelName()}, nil
 	case "/mcp":
 		if e.mcpStatus == nil {
 			return SlashEffect{Notice: "no MCP servers configured"}, nil

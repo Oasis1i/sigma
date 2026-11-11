@@ -1,0 +1,32 @@
+Sigma reimplements subscription login from the public behavior of the
+official CLIs and from the MIT-licensed CLIProxyAPI project. It does not
+copy source from sub2api (LGPL-3.0).
+
+Adapted protocol notes, with attribution:
+
+- ChatGPT / Codex OAuth client id, authorize and token URLs, PKCE parameters,
+  and the Codex Responses endpoint headers. Public client
+  `app_EMoamEEZ73f0CkXaXp7hrann` ships in openai/codex (Apache-2.0) and in
+  router-for-me/CLIProxyAPI (MIT).
+  https://github.com/openai/codex
+  https://github.com/router-for-me/CLIProxyAPI
+
+- Claude Code OAuth client id, authorize and token URLs, and the JSON token
+  request. Documented from router-for-me/CLIProxyAPI (MIT) and public Claude
+  Code traces.
+  https://github.com/router-for-me/CLIProxyAPI
+
+- Gemini CLI installed-app OAuth and the Code Assist (`cloudcode-pa`) calls.
+  The client id and secret are published in google-gemini/gemini-cli
+  (Apache-2.0). They are not copied into this tree, because GitHub secret
+  scanning rejects them. Set SIGMA_GEMINI_CLIENT_ID and
+  SIGMA_GEMINI_CLIENT_SECRET from that project.
+  https://github.com/google-gemini/gemini-cli
+  https://github.com/router-for-me/CLIProxyAPI
+
+- Grok CLI OAuth client id, OIDC issuer, and the CLI chat proxy base URL.
+  Documented from router-for-me/CLIProxyAPI (MIT).
+  https://github.com/router-for-me/CLIProxyAPI
+
+Copyright for those projects remains with their authors. Sigma's own code
+in this repository is MIT; see LICENSE.

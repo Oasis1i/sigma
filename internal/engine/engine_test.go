@@ -378,6 +378,21 @@ func TestSlashModeClearResume(t *testing.T) {
 	}
 }
 
+func TestModelSwitch(t *testing.T) {
+	script := &provider.Scripted{Responses: []provider.Response{{Content: "ok"}}}
+	eng, _ := newEngine(t, "ask", script)
+	if err := eng.SetModel("other-model"); err != nil {
+		t.Fatal(err)
+	}
+	if eng.ModelName() != "other-model" || script.CurrentModel() != "other-model" {
+		t.Fatalf("model %s client %s", eng.ModelName(), script.CurrentModel())
+	}
+	effect, err := eng.ApplySlash("/model")
+	if err != nil || !strings.Contains(effect.Notice, "other-model") {
+		t.Fatalf("%v %q", err, effect.Notice)
+	}
+}
+
 type gateClient struct {
 	started chan struct{}
 }

@@ -161,6 +161,7 @@ func (m *Model) applySlash(line string) (tea.Model, tea.Cmd) {
 		m.rebuild()
 	}
 	m.mode = m.ctl.Mode()
+	m.modelName = m.ctl.ModelName()
 	m.sessionID = m.ctl.SessionID()
 	m.promptTokens, m.completionTokens = m.ctl.Usage()
 	m.syncViewport()

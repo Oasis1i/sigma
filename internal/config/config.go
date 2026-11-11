@@ -43,27 +43,41 @@ type Rule struct {
 // compact_threshold: 0 is a real value (compaction off) when the key is
 // present. apply uses the decode metadata to tell those apart.
 type file struct {
-	BaseURL          string      `toml:"base_url"`
-	Model            string      `toml:"model"`
-	APIKey           string      `toml:"api_key"`
-	MaxSteps         int         `toml:"max_steps"`
-	BashTimeout      int         `toml:"bash_timeout_seconds"`
-	Approval         string      `toml:"approval_mode"`
-	CompactThreshold int         `toml:"compact_threshold"`
-	Sandbox          string      `toml:"sandbox"`
-	DockerImage      string      `toml:"docker_image"`
-	Verify           []string    `toml:"verify"`
-	ExploreMaxSteps  int         `toml:"explore_max_steps"`
-	ExploreMaxTokens int         `toml:"explore_max_tokens"`
-	MCP              []MCPServer `toml:"mcp"`
-	Rules            []Rule      `toml:"rules"`
+	Provider              string          `toml:"provider"`
+	BaseURL               string          `toml:"base_url"`
+	Model                 string          `toml:"model"`
+	Models                []string        `toml:"models"`
+	APIKey                string          `toml:"api_key"`
+	AllowSubscriptionRisk bool            `toml:"allow_subscription_risk"`
+	Subscription          map[string]bool `toml:"subscription"`
+	MaxSteps              int             `toml:"max_steps"`
+	BashTimeout           int             `toml:"bash_timeout_seconds"`
+	Approval              string          `toml:"approval_mode"`
+	CompactThreshold      int             `toml:"compact_threshold"`
+	Sandbox               string          `toml:"sandbox"`
+	DockerImage           string          `toml:"docker_image"`
+	Verify                []string        `toml:"verify"`
+	ExploreMaxSteps       int             `toml:"explore_max_steps"`
+	ExploreMaxTokens      int             `toml:"explore_max_tokens"`
+	MCP                   []MCPServer     `toml:"mcp"`
+	Rules                 []Rule          `toml:"rules"`
 }
 
 // Config is the fully resolved settings for one run.
 type Config struct {
-	BaseURL        string
-	Model          string
-	APIKey         string
+	// Provider is openai, chatgpt, claude, gemini, or grok. openai is the
+	// existing OpenAI-compatible base_url. Empty means openai.
+	Provider string
+	BaseURL  string
+	Model    string
+	Models   []string
+	APIKey   string
+	// AllowSubscriptionRisk opts in to providers that reuse another
+	// product's OAuth client id (claude, gemini, and grok's OAuth path).
+	AllowSubscriptionRisk bool
+	// Subscription is a per-provider opt-in. A true value is enough for
+	// that provider even when AllowSubscriptionRisk is false.
+	Subscription   map[string]bool
 	MaxSteps       int
 	BashTimeoutSec int
 	Approval       string
@@ -90,11 +104,13 @@ type Overrides struct {
 	BaseURL     string
 	Model       string
 	APIKey      string
+	Provider    string
 	Mode        string
 	MaxSteps    int
 	BaseURLSet  bool
 	ModelSet    bool
 	APIKeySet   bool
+	ProviderSet bool
 	ModeSet     bool
 	MaxStepsSet bool
 }
@@ -163,6 +179,9 @@ func Load(ov Overrides) (Config, error) {
 		}
 	}
 
+	if v := os.Getenv("SIGMA_PROVIDER"); v != "" {
+		cfg.Provider = v
+	}
 	if v := os.Getenv("SIGMA_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
@@ -171,6 +190,9 @@ func Load(ov Overrides) (Config, error) {
 	}
 	if v := os.Getenv("SIGMA_API_KEY"); v != "" {
 		cfg.APIKey = v
+	}
+	if ov.ProviderSet {
+		cfg.Provider = ov.Provider
 	}
 	if ov.BaseURLSet {
 		cfg.BaseURL = ov.BaseURL
@@ -195,11 +217,28 @@ func Load(ov Overrides) (Config, error) {
 }
 
 func apply(cfg *Config, f file, md toml.MetaData) {
+	if f.Provider != "" {
+		cfg.Provider = f.Provider
+	}
 	if f.BaseURL != "" {
 		cfg.BaseURL = f.BaseURL
 	}
 	if f.Model != "" {
 		cfg.Model = f.Model
+	}
+	if md.IsDefined("models") {
+		cfg.Models = append([]string(nil), f.Models...)
+	}
+	if md.IsDefined("allow_subscription_risk") {
+		cfg.AllowSubscriptionRisk = f.AllowSubscriptionRisk
+	}
+	if md.IsDefined("subscription") {
+		if cfg.Subscription == nil {
+			cfg.Subscription = map[string]bool{}
+		}
+		for name, on := range f.Subscription {
+			cfg.Subscription[strings.ToLower(strings.TrimSpace(name))] = on
+		}
 	}
 	if f.APIKey != "" {
 		cfg.APIKey = f.APIKey
@@ -242,18 +281,29 @@ func apply(cfg *Config, f file, md toml.MetaData) {
 }
 
 func validate(cfg *Config) error {
+	cfg.Provider = strings.ToLower(strings.TrimSpace(cfg.Provider))
+	if cfg.Provider == "" {
+		cfg.Provider = "openai"
+	}
+	switch cfg.Provider {
+	case "openai", "chatgpt", "claude", "gemini", "grok":
+	default:
+		return fmt.Errorf("unknown provider %q (want openai, chatgpt, claude, gemini, or grok)", cfg.Provider)
+	}
 	if strings.TrimSpace(cfg.Model) == "" {
 		return fmt.Errorf("model is not set; set it in ~/.config/sigma/config.toml or .sigma.toml, or pass SIGMA_MODEL / --model")
 	}
-	if strings.TrimSpace(cfg.BaseURL) == "" {
-		return fmt.Errorf("base_url is not set; set it in ~/.config/sigma/config.toml or .sigma.toml, or pass SIGMA_BASE_URL / --base-url")
-	}
-	u, err := url.Parse(strings.TrimSpace(cfg.BaseURL))
-	if err != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return fmt.Errorf("base_url %q is not an absolute http(s) URL", cfg.BaseURL)
-	}
-	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	cfg.Model = strings.TrimSpace(cfg.Model)
+	if cfg.Provider == "openai" || strings.TrimSpace(cfg.BaseURL) != "" {
+		if strings.TrimSpace(cfg.BaseURL) == "" {
+			return fmt.Errorf("base_url is not set; set it in ~/.config/sigma/config.toml or .sigma.toml, or pass SIGMA_BASE_URL / --base-url")
+		}
+		u, err := url.Parse(strings.TrimSpace(cfg.BaseURL))
+		if err != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return fmt.Errorf("base_url %q is not an absolute http(s) URL", cfg.BaseURL)
+		}
+		cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	}
 	switch cfg.Approval {
 	case "plan", "ask", "auto":
 	default:
@@ -357,6 +407,55 @@ func userConfigPath() string {
 		base = filepath.Join(home, ".config")
 	}
 	return filepath.Join(base, "sigma", "config.toml")
+}
+
+// ReadOptIn loads only the subscription opt-in flags. Login uses it so a
+// missing model or base_url does not block sigma login.
+func ReadOptIn(configPath, workspace string) (bool, map[string]bool, error) {
+	var cfg Config
+	applyFile := func(path string) error {
+		f, md, found, err := readFile(path)
+		if err != nil || !found {
+			return err
+		}
+		apply(&cfg, f, md)
+		return nil
+	}
+	if configPath != "" {
+		f, md, found, err := readFile(configPath)
+		if err != nil {
+			return false, nil, err
+		}
+		if !found {
+			return false, nil, fmt.Errorf("config file not found: %s", configPath)
+		}
+		apply(&cfg, f, md)
+		return cfg.AllowSubscriptionRisk, cfg.Subscription, nil
+	}
+	if path := userConfigPath(); path != "" {
+		if err := applyFile(path); err != nil {
+			return false, nil, err
+		}
+	}
+	if workspace == "" {
+		if wd, err := os.Getwd(); err == nil {
+			workspace = wd
+		}
+	}
+	if workspace != "" {
+		if err := applyFile(filepath.Join(workspace, ".sigma.toml")); err != nil {
+			return false, nil, err
+		}
+	}
+	return cfg.AllowSubscriptionRisk, cfg.Subscription, nil
+}
+
+// OptIn reports whether a risk-gated provider may be used.
+func OptIn(allowAll bool, per map[string]bool, provider string) bool {
+	if allowAll {
+		return true
+	}
+	return per != nil && per[provider]
 }
 
 // UserAgentsPath is ~/.config/sigma/AGENTS.md (or $XDG_CONFIG_HOME/sigma/AGENTS.md).
