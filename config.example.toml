@@ -1,0 +1,31 @@
+# Sigma configuration.
+# Copy to ~/.config/sigma/config.toml, or to .sigma.toml in a workspace.
+# SIGMA_BASE_URL, SIGMA_MODEL, and SIGMA_API_KEY override the file.
+# CLI flags override the environment. There is no default model or base URL.
+
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+api_key = "sk-replace-me"
+
+# plan (read-only) | ask (prompt before writes) | auto (run what the rules allow)
+approval_mode = "ask"
+max_steps = 50
+bash_timeout_seconds = 120
+
+# Rules match on "tool" or "tool:argument".
+# * is a glob that matches any text, including slashes and spaces.
+# Matching does not follow the order of this list. Every matching deny
+# wins over every ask, and every ask wins over every allow.
+# Patterns are anchored: bash:rm -rf * matches "rm -rf /tmp" but not "echo rm -rf".
+
+[[rules]]
+action = "deny"
+pattern = "bash:rm -rf *"
+
+[[rules]]
+action = "ask"
+pattern = "bash:git push*"
+
+[[rules]]
+action = "allow"
+pattern = "bash:go test*"

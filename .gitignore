@@ -1,0 +1,4 @@
+/sigma
+*.exe
+*.test
+/dist/

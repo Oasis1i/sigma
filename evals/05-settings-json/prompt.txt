@@ -1,0 +1,1 @@
+Create settings.json with exactly two JSON fields: "name" set to the string sigma, and "debug" set to false. Do not add other fields.

@@ -1,0 +1,1 @@
+Implement FizzBuzz in fizz.go. Return "FizzBuzz" when n is divisible by 15, "Fizz" when divisible by 3, "Buzz" when divisible by 5, and the decimal representation of n otherwise. The tests must pass. Do not change the tests.

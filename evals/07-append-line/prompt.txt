@@ -1,0 +1,1 @@
+Append a third line containing exactly gamma to notes.txt. Do not change the existing lines, and keep a trailing newline at the end of the file.
