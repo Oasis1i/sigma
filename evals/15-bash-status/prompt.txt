@@ -1,0 +1,1 @@
+Create status.txt containing exactly the word ready followed by a newline. Use the bash tool to write the file.

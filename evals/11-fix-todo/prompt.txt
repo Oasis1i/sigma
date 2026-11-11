@@ -1,0 +1,1 @@
+Find the TODO about returning a string length, implement it, and delete the TODO comment. The tests must pass. Do not change the tests.

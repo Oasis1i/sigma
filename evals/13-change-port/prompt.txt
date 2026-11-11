@@ -1,0 +1,1 @@
+In config.txt, change port=8080 to port=9090. Do not change the host line. Keep the trailing newline.

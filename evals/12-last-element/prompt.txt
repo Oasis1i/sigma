@@ -1,0 +1,1 @@
+Last panics or returns the wrong value. Return the last element and true when the slice is non-empty, and 0, false when it is empty. The tests must pass. Do not change the tests.

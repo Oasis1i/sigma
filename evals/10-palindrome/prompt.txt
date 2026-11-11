@@ -1,0 +1,1 @@
+IsPalindrome always returns false. Treat the input as raw bytes and return true when the string reads the same forwards and backwards, including the empty string. The tests must pass. Do not change the tests.

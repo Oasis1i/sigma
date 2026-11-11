@@ -1,0 +1,1 @@
+Reverse returns its input unchanged. Make it return the byte-reversed string so the tests pass. ASCII is enough. Do not change the tests.
