@@ -177,7 +177,10 @@ func (s *Session) Events() ([]Event, error) {
 	return ReadEvents(s.Path)
 }
 
-// Messages rebuilds the conversation. Non-message events are skipped.
+// Messages rebuilds the conversation the model should see. A later system
+// prompt replaces the first one, so a mode change can update "Approval mode:"
+// without adding a turn. Mode-change notes that older builds stored as user
+// messages are dropped.
 func (s *Session) Messages() ([]provider.Message, error) {
 	events, err := s.Events()
 	if err != nil {
@@ -186,10 +189,53 @@ func (s *Session) Messages() ([]provider.Message, error) {
 	var out []provider.Message
 	for _, e := range events {
 		if e.Type == TypeMessage && e.Message != nil {
-			out = append(out, *e.Message)
+			out = AppendFolded(out, *e.Message)
 		}
 	}
 	return out, nil
+}
+
+// AppendFolded adds one logged message to the model transcript.
+// A full Sigma system prompt replaces the existing system message. A
+// "Approval mode is now …" user note is not part of the transcript.
+func AppendFolded(out []provider.Message, m provider.Message) []provider.Message {
+	if m.Role == "user" && IsModeNote(m.Content) {
+		return out
+	}
+	if m.Role == "system" && IsReplacementPrompt(m.Content) && len(out) > 0 && out[0].Role == "system" {
+		out[0].Content = m.Content
+		return out
+	}
+	return append(out, m)
+}
+
+// IsReplacementPrompt reports a system prompt built by package prompt.
+// Mode changes append one of these so resume can replace the stale copy.
+func IsReplacementPrompt(content string) bool {
+	return strings.Contains(content, "You are Sigma") && strings.Contains(content, "Approval mode:")
+}
+
+// IsModeNote reports the user-role note older builds wrote on /mode.
+func IsModeNote(content string) bool {
+	switch strings.TrimSpace(content) {
+	case "Approval mode is now plan.", "Approval mode is now ask.", "Approval mode is now auto.":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsRealUserPrompt reports a message the session list can use as a title.
+// Mode notes and compaction summaries are bookkeeping, not the user's task.
+func IsRealUserPrompt(content string) bool {
+	s := strings.TrimSpace(content)
+	if s == "" || IsModeNote(s) {
+		return false
+	}
+	if strings.HasPrefix(s, "Summary of the earlier conversation:") {
+		return false
+	}
+	return true
 }
 
 // RememberedTools returns tools the user allowed with "always".

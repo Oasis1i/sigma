@@ -283,6 +283,95 @@ func TestListensOnLoopback(t *testing.T) {
 	}
 }
 
+func TestModeSwitchIsNotTheSessionTitle(t *testing.T) {
+	script := &provider.Scripted{Responses: []provider.Response{{Content: "ok"}}}
+	eng, _, httpSrv := testStack(t, "ask", script)
+	client := httpSrv.Client()
+	post, err := http.NewRequest(http.MethodPost, httpSrv.URL+"/api/message", strings.NewReader(`{"text":"fix the failing test"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	post.Header.Set("Authorization", "Bearer test-token-0123456789abcdef")
+	post.Header.Set("Content-Type", "application/json")
+	res, err := client.Do(post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("message: %s", res.Status)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && (eng.Busy() || len(eng.Messages()) < 3) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if eng.Busy() {
+		t.Fatal("turn did not finish")
+	}
+
+	modeReq, err := http.NewRequest(http.MethodPost, httpSrv.URL+"/api/mode", strings.NewReader(`{"mode":"auto"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	modeReq.Header.Set("Authorization", "Bearer test-token-0123456789abcdef")
+	modeReq.Header.Set("Content-Type", "application/json")
+	res, err = client.Do(modeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("mode: %s", res.Status)
+	}
+
+	stateReq, err := http.NewRequest(http.MethodGet, httpSrv.URL+"/api/state", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateReq.Header.Set("Authorization", "Bearer test-token-0123456789abcdef")
+	res, err = client.Do(stateReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var state stateJSON
+	if err := json.NewDecoder(res.Body).Decode(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Mode != "auto" {
+		t.Fatalf("mode %s", state.Mode)
+	}
+	if len(state.Messages) == 0 || state.Messages[0].Role != "system" || !strings.Contains(state.Messages[0].Content, "Approval mode: auto") {
+		t.Fatalf("system prompt: %+v", state.Messages)
+	}
+	if strings.Contains(state.Messages[0].Content, "Approval mode: ask") {
+		t.Fatalf("system prompt still says ask: %s", state.Messages[0].Content)
+	}
+	for _, m := range state.Messages {
+		if m.Role == "user" && strings.Contains(m.Content, "Approval mode is now") {
+			t.Fatalf("mode change stored as a user message: %+v", m)
+		}
+	}
+
+	sessReq, err := http.NewRequest(http.MethodGet, httpSrv.URL+"/api/sessions", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessReq.Header.Set("Authorization", "Bearer test-token-0123456789abcdef")
+	res, err = client.Do(sessReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var sessions []sessionJSON
+	if err := json.NewDecoder(res.Body).Decode(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].Preview != "fix the failing test" {
+		t.Fatalf("sessions %+v", sessions)
+	}
+}
+
 func workspaceFrom(t *testing.T, httpSrv *httptest.Server) string {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodGet, httpSrv.URL+"/api/state", nil)

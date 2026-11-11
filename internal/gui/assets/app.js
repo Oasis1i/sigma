@@ -59,6 +59,7 @@ document.querySelectorAll(".mode button").forEach((btn) => {
     }
     const body = await res.json();
     setMode(body.mode);
+    addNotice("approval mode: " + body.mode);
   });
 });
 
@@ -112,7 +113,10 @@ function renderMessages(messages) {
   const tools = new Map();
   for (const msg of messages) {
     if (msg.role === "system") continue;
-    if (msg.role === "user") addUser(msg.content || "");
+    if (msg.role === "user") {
+      if (isModeNote(msg.content)) addNotice(msg.content.trim());
+      else addUser(msg.content || "");
+    }
     if (msg.role === "assistant") {
       if ((msg.content || "").trim()) addAssistant(msg.content, false);
       for (const call of msg.tool_calls || []) {
@@ -258,6 +262,10 @@ function apply(ev) {
       break;
   }
   scrollDown();
+}
+
+function isModeNote(text) {
+  return /^Approval mode is now (plan|ask|auto)\.$/.test((text || "").trim());
 }
 
 function addUser(text) {

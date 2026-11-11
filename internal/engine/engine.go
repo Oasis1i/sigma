@@ -198,9 +198,9 @@ func (e *Engine) Messages() []provider.Message {
 	return out
 }
 
-// SetMode changes the policy and tells the model, so the next completion
-// sees the new mode. It waits until the current turn finishes: Note appends
-// to Messages, which the turn also appends to.
+// SetMode changes the policy and rewrites the system prompt's "Approval mode:"
+// line. It does not append a user message: that note was showing up as a
+// "you" turn and as the session title. The UI renders the slash result itself.
 func (e *Engine) SetMode(mode string) error {
 	if e.Busy() {
 		return fmt.Errorf("wait for the current turn to finish before changing mode")
@@ -208,10 +208,35 @@ func (e *Engine) SetMode(mode string) error {
 	if e.ag == nil || e.ag.Policy == nil {
 		return fmt.Errorf("no approval policy")
 	}
+	prev := e.Mode()
 	if err := e.ag.Policy.SetMode(mode); err != nil {
 		return err
 	}
-	return e.ag.Note("Approval mode is now " + mode + ".")
+	if err := e.retargetSystemPrompt(); err != nil {
+		_ = e.ag.Policy.SetMode(prev)
+		return err
+	}
+	return nil
+}
+
+// retargetSystemPrompt replaces the leading system message and appends the
+// same text to the log. Resume keeps the latest prompt and drops the earlier
+// copy, so the model sees one system message with the current mode.
+func (e *Engine) retargetSystemPrompt() error {
+	sys, err := e.systemPrompt()
+	if err != nil {
+		return err
+	}
+	msg := provider.Message{Role: "system", Content: sys}
+	if len(e.ag.Messages) > 0 && e.ag.Messages[0].Role == "system" {
+		e.ag.Messages[0] = msg
+	} else {
+		e.ag.Messages = append([]provider.Message{msg}, e.ag.Messages...)
+	}
+	if e.ag.Session == nil {
+		return nil
+	}
+	return e.ag.Session.AppendMessage(msg)
 }
 
 // ListSessions reads the session directory, newest first.
