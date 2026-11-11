@@ -10,6 +10,8 @@
 // is one of the commands. The engine does not read the terminal itself.
 package engine
 
+import "github.com/Oasis1i/sigma/internal/tools"
+
 // Kind identifies one item on the event stream. The string values are stable:
 // the web GUI serializes events as JSON and matches on them.
 type Kind string
@@ -24,6 +26,11 @@ const (
 	KindNotice    Kind = "notice"
 	KindError     Kind = "error"
 	KindDone      Kind = "done"
+	// KindSubagent is progress from a read-only explore/task child.
+	// Phase is start, step, or end.
+	KindSubagent Kind = "subagent"
+	// KindTodo is the current plan list.
+	KindTodo Kind = "todo"
 )
 
 // Event is one thing a UI should show or answer. Only the fields for Kind
@@ -55,6 +62,12 @@ type Event struct {
 
 	// Canceled is set on KindDone when the turn was interrupted.
 	Canceled bool `json:"canceled,omitempty"`
+
+	// Subagent fields. Phase is start, step, or end.
+	Phase      string `json:"phase,omitempty"`
+	SubagentID string `json:"subagent_id,omitempty"`
+
+	Todos []tools.Todo `json:"todos,omitempty"`
 }
 
 // CmdKind is what a UI can ask the engine to do.

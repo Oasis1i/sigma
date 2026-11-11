@@ -86,6 +86,7 @@ async function refresh() {
   ws.title = state.workspace || "";
   setMode(state.mode);
   renderMessages(state.messages || []);
+  renderTodos(state.todos || []);
   setStatus(state);
   if (sessRes.ok) renderSessions(await sessRes.json());
 }
@@ -128,6 +129,51 @@ function renderMessages(messages) {
       const card = tools.get(msg.tool_call_id);
       if (card) finishTool(card, msg.content || "", (msg.content || "").startsWith("Error:"));
     }
+  }
+  scrollDown();
+}
+
+function renderTodos(items) {
+  const ul = document.querySelector("#todos");
+  if (!ul) return;
+  ul.replaceChildren();
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.textContent = (item.status || "pending") + "  " + (item.content || "");
+    if (item.status === "completed") li.className = "done";
+    ul.append(li);
+  }
+}
+
+const subagents = new Map();
+
+function applySubagent(ev) {
+  const id = ev.subagent_id || "sub";
+  let el = subagents.get(id);
+  if (!el) {
+    el = document.createElement("details");
+    el.className = "tool subagent";
+    el.open = false;
+    const summary = document.createElement("summary");
+    summary.textContent = "explore  " + (ev.text || id).slice(0, 80);
+    const body = document.createElement("div");
+    body.className = "body";
+    el.append(summary, body);
+    transcript.append(el);
+    subagents.set(id, el);
+  }
+  const body = el.querySelector(".body");
+  if (ev.phase === "step") {
+    const line = document.createElement("div");
+    line.className = "muted";
+    const step = ev.step ? "step " + ev.step + "/" + ev.max_steps + " " : "";
+    line.textContent = step + (ev.text || "");
+    if (line.textContent.trim()) body.append(line);
+  }
+  if (ev.phase === "end") {
+    const line = document.createElement("div");
+    line.textContent = ev.text || (ev.failed ? "explore failed" : "done");
+    body.append(line);
   }
   scrollDown();
 }
@@ -247,6 +293,12 @@ function apply(ev) {
       break;
     case "notice":
       addNotice(ev.text || "");
+      break;
+    case "subagent":
+      applySubagent(ev);
+      break;
+    case "todo":
+      renderTodos(ev.todos || []);
       break;
     case "error":
       addError(ev.text || "error");

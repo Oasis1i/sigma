@@ -32,6 +32,7 @@ import (
 
 	"github.com/Oasis1i/sigma/internal/engine"
 	"github.com/Oasis1i/sigma/internal/provider"
+	"github.com/Oasis1i/sigma/internal/tools"
 )
 
 //go:embed assets/*
@@ -270,6 +271,7 @@ type stateJSON struct {
 	PromptTokens     int                `json:"prompt_tokens"`
 	CompletionTokens int                `json:"completion_tokens"`
 	Messages         []provider.Message `json:"messages"`
+	Todos            []tools.Todo       `json:"todos,omitempty"`
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
@@ -287,6 +289,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		PromptTokens:     p,
 		CompletionTokens: c,
 		Messages:         msgs,
+		Todos:            s.eng.Todos(),
 	})
 }
 

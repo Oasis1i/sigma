@@ -10,7 +10,7 @@ It is a learning project. The interesting pieces (the engine boundary, the agent
 
 Sigma 是一个用 Go 写的极简编码代理。它通过 OpenAI 兼容接口调用模型，在本地工作区里读文件、搜索、精确替换、写入和执行 bash。
 
-交互默认是 TUI（`sigma` 或 `sigma tui`）：可滚动的对话、Markdown 回复、可折叠的工具块（`edit_file` 会显示 diff）、底部状态栏和输入框。`sigma gui` 在 `127.0.0.1` 上打开本地网页，启动时带一个随机 token，别人连上端口也驱动不了代理。`--plain` 保留原来的逐行 REPL，`-p` 仍然是执行一次后退出。
+交互默认是 TUI（`sigma` 或 `sigma tui`）：可滚动的对话、Markdown 回复、可折叠的工具块（`edit_file` 会显示 diff）、底部状态栏和输入框。`sigma gui` 在 `127.0.0.1` 上打开本地网页，URL 里带一次性 token，别人连上端口也驱动不了代理。`/mode plan` 时模型只能读仓库并用 `todo_write` 给出计划，你批准后才按之前的审批模式执行。`explore`（也叫 `task`）会启动一个只读子代理，在自己的上下文里搜索并返回摘要。`--plain` 保留原来的逐行 REPL，`-p` 仍然是执行一次后退出。
 
 在 `~/.config/sigma/config.toml` 或项目里的 `.sigma.toml` 中设置 `base_url`、`model` 和 `api_key`。没有默认模型；缺少模型或地址时程序会直接退出并说明原因。环境变量 `SIGMA_BASE_URL`、`SIGMA_MODEL`、`SIGMA_API_KEY` 以及对应的命令行参数会覆盖配置文件。
 
@@ -233,8 +233,16 @@ Approval is not the sandbox. The policy decides whether a call may run. `interna
 | `edit_file` | Exact replacement. `old_string` must occur once. Zero matches or several matches is an error and the file is left untouched. Empty `new_string` deletes the match. |
 | `write_file` | Create or overwrite a file, including parent directories. |
 | `bash` | `bash -c` in the workspace, default timeout 120s. Exit code is included. Output keeps the first and last 16KB. A per-call timeout can only be shorter than the configured one. |
+| `explore`, `task` | Read-only subagent with its own context. It may `read_file`, `list_dir`, and `grep`, then returns a short summary. Default budget is 8 steps and 8000 estimated tokens (`explore_max_steps`, `explore_max_tokens`). |
+| `todo_write` | Replace the in-memory plan. In plan mode this is how the model publishes a plan. It does not edit files. |
 
 Paths must stay inside the workspace. A symlink that points outside is rejected.
+
+## Plan mode and subagents
+
+`/mode plan` (or the plan button) switches the agent to a read-only phase. It may investigate with the read tools and `explore`, then it must call `todo_write`. When that turn finishes with a non-empty list, Sigma asks you to approve the plan. Yes continues in the approval mode you were using before plan (ask, if you started in plan). No leaves you in plan mode so you can ask for a revision.
+
+The TUI shows the todo list above the status bar and folds each subagent into a block. The GUI shows todos in the sidebar and keeps subagent steps collapsed. Both receive the same `todo` and `subagent` events from the engine.
 
 If the model returns no native tool calls but writes a fenced `bash`, `sh`, or `shell` block, Sigma runs that block as `bash`. Other fences are ignored. The system prompt tells the model not to put examples in bash fences.
 
@@ -314,7 +322,7 @@ These tasks need a configured model, so they are not part of GitHub Actions.
 
 **v3**
 
-- subagents and a richer plan mode
+- ~~subagents and a richer plan mode~~ done (`explore` / `task`, `todo_write`, approve the plan, then execute)
 - an MCP client
 - a SWE-bench Lite subset compared with mini-swe-agent
 

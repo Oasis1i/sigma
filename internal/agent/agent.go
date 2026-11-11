@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Oasis1i/sigma/internal/approval"
@@ -55,6 +56,17 @@ type Agent struct {
 	Verify        []string
 	VerifyRunner  sandbox.Runner
 	VerifyTimeout time.Duration
+	// TokenBudget is an estimated-token cap checked before each model call.
+	// Zero means no cap. The explore subagent sets it; the parent does not.
+	TokenBudget int
+	// Todos is the plan list todo_write updates. The engine reads it when a
+	// plan-mode turn finishes and asks the user to approve.
+	Todos *tools.Todos
+	// ExploreMaxSteps and ExploreMaxTokens bound a child explore/task agent.
+	// Zero selects the defaults (8 steps, 8000 estimated tokens).
+	ExploreMaxSteps  int
+	ExploreMaxTokens int
+	subSeq           atomic.Uint64
 }
 
 // RunTurn appends one user message and loops until the model stops calling
@@ -77,6 +89,9 @@ func (a *Agent) RunTurn(ctx context.Context, userText string) error {
 		}
 		if err := a.compact(ctx); err != nil {
 			return err
+		}
+		if a.TokenBudget > 0 && EstimateTokens(a.Messages) > a.TokenBudget {
+			return fmt.Errorf("token budget exceeded (%d)", a.TokenBudget)
 		}
 		a.step(step, maxSteps)
 		// streamed counts bytes delivered through onDelta. A provider that

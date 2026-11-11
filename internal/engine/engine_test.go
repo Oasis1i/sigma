@@ -32,18 +32,26 @@ func newEngine(t *testing.T, mode string, client provider.Client) (*Engine, stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	ag := &agent.Agent{
-		Client: client,
-		Registry: tools.NewRegistry(&tools.Env{
-			Workspace:   ws,
-			Runner:      &sandbox.Local{Dir: ws},
-			BashTimeout: 5 * time.Second,
-		}),
-		Policy:   policy,
-		Session:  sess,
-		Messages: []provider.Message{{Role: "system", Content: "sys"}},
-		MaxSteps: 8,
+	env := &tools.Env{
+		Workspace:   ws,
+		Runner:      &sandbox.Local{Dir: ws},
+		BashTimeout: 5 * time.Second,
+		Todos:       tools.NewTodos(),
 	}
+	ag := &agent.Agent{
+		Client:           client,
+		Policy:           policy,
+		Session:          sess,
+		Messages:         []provider.Message{{Role: "system", Content: "sys"}},
+		MaxSteps:         8,
+		Todos:            env.Todos,
+		ExploreMaxSteps:  4,
+		ExploreMaxTokens: 8000,
+	}
+	env.Explore = func(ctx context.Context, task string) (string, error) {
+		return ag.Explore(ctx, task)
+	}
+	ag.Registry = tools.NewRegistry(env)
 	if err := sess.AppendMessage(ag.Messages[0]); err != nil {
 		t.Fatal(err)
 	}
