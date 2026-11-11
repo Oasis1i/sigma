@@ -87,7 +87,7 @@ func peek(path string) (model, preview string) {
 		if e.Type == TypeMeta && e.Meta != nil && model == "" {
 			model = e.Meta["model"]
 		}
-		if e.Type == TypeMessage && e.Message != nil && e.Message.Role == "user" && preview == "" {
+		if e.Type == TypeMessage && e.Message != nil && e.Message.Role == "user" && preview == "" && IsRealUserPrompt(e.Message.Content) {
 			preview = oneLine(e.Message.Content, 80)
 		}
 		if model != "" && preview != "" {

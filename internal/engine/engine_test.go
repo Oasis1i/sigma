@@ -285,6 +285,44 @@ func TestProviderError(t *testing.T) {
 	}
 }
 
+func TestSetModeUpdatesSystemPrompt(t *testing.T) {
+	eng, _ := newEngine(t, "ask", &provider.Scripted{})
+	eng.ag.Messages = []provider.Message{{Role: "system", Content: "You are Sigma\nApproval mode: ask\n"}}
+	if err := eng.ag.Session.AppendMessage(eng.ag.Messages[0]); err != nil {
+		t.Fatal(err)
+	}
+	before := len(eng.Messages())
+	effect, err := eng.ApplySlash("/mode auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effect.Mode != "auto" || eng.Mode() != "auto" {
+		t.Fatalf("mode %s %+v", eng.Mode(), effect)
+	}
+	msgs := eng.Messages()
+	if len(msgs) != before {
+		t.Fatalf("mode change added a turn: before %d after %d %+v", before, len(msgs), msgs)
+	}
+	for _, m := range msgs {
+		if m.Role == "user" {
+			t.Fatalf("user message in transcript: %+v", m)
+		}
+	}
+	if msgs[0].Role != "system" || !strings.Contains(msgs[0].Content, "Approval mode: auto") {
+		t.Fatalf("system prompt: %s", msgs[0].Content)
+	}
+	if strings.Contains(msgs[0].Content, "Approval mode: ask") {
+		t.Fatalf("old mode still in the system prompt: %s", msgs[0].Content)
+	}
+	loaded, err := eng.ag.Session.Messages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 || !strings.Contains(loaded[0].Content, "Approval mode: auto") {
+		t.Fatalf("resume transcript: %+v", loaded)
+	}
+}
+
 func TestSlashModeClearResume(t *testing.T) {
 	eng, _ := newEngine(t, "ask", &provider.Scripted{})
 	first := eng.SessionID()

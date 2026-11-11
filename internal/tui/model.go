@@ -19,6 +19,7 @@ import (
 	"github.com/Oasis1i/sigma/internal/agent"
 	"github.com/Oasis1i/sigma/internal/engine"
 	"github.com/Oasis1i/sigma/internal/provider"
+	"github.com/Oasis1i/sigma/internal/session"
 )
 
 // Controller is the slice of the engine the TUI uses. *engine.Engine
@@ -182,6 +183,10 @@ func (m *Model) rebuild() {
 		case "system":
 			continue
 		case "user":
+			if session.IsModeNote(msg.Content) {
+				blocks = append(blocks, block{kind: blockNotice, text: msg.Content})
+				continue
+			}
 			blocks = append(blocks, block{kind: blockUser, text: msg.Content})
 		case "assistant":
 			if strings.TrimSpace(msg.Content) != "" {

@@ -249,6 +249,30 @@ func TestResumeRebuildsTranscript(t *testing.T) {
 	}
 }
 
+func TestModeNoteIsNotAUserBubble(t *testing.T) {
+	f := &fakeCtl{messages: []provider.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "Approval mode is now auto."},
+		{Role: "user", Content: "fix the failing test"},
+	}}
+	m := newTestModel(f)
+	var sawNote, sawUser bool
+	for _, blk := range m.blocks {
+		if blk.kind == blockUser && strings.Contains(blk.text, "Approval mode") {
+			t.Fatalf("mode note rendered as you: %+v", blk)
+		}
+		if blk.kind == blockNotice && blk.text == "Approval mode is now auto." {
+			sawNote = true
+		}
+		if blk.kind == blockUser && blk.text == "fix the failing test" {
+			sawUser = true
+		}
+	}
+	if !sawNote || !sawUser {
+		t.Fatalf("blocks %+v", m.blocks)
+	}
+}
+
 func stripANSI(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {

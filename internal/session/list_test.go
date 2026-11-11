@@ -2,6 +2,7 @@ package session
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,5 +57,42 @@ func TestListNewestFirst(t *testing.T) {
 	empty, err := List(dir + "-missing")
 	if err != nil || len(empty) != 0 {
 		t.Fatalf("missing dir: %v %v", empty, err)
+	}
+}
+
+func TestPreviewSkipsModeNote(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Create(dir, map[string]string{"model": "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := "fix the failing test in add.go and explain why the helper returned the wrong sum for negative numbers"
+	for _, m := range []provider.Message{
+		{Role: "system", Content: "You are Sigma\nApproval mode: ask\n"},
+		{Role: "user", Content: "Approval mode is now auto."},
+		{Role: "user", Content: long},
+	} {
+		if err := s.AppendMessage(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	list, err := List(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("len %d", len(list))
+	}
+	if strings.Contains(list[0].Preview, "Approval mode") {
+		t.Fatalf("title used the mode note: %q", list[0].Preview)
+	}
+	if !strings.HasPrefix(list[0].Preview, "fix the failing test") || !strings.HasSuffix(list[0].Preview, "...") {
+		t.Fatalf("preview %q", list[0].Preview)
+	}
+	if !IsRealUserPrompt(long) || IsRealUserPrompt("Approval mode is now plan.") {
+		t.Fatal("IsRealUserPrompt")
 	}
 }
