@@ -38,6 +38,7 @@ const usageText = `sigma is a minimal coding agent.
 Usage:
   sigma                         TUI when stdout is a terminal, otherwise the plain REPL
   sigma tui                     Bubble Tea TUI
+  sigma gui                     local web UI on 127.0.0.1
   sigma --plain                 line REPL, even on a terminal
   sigma -p "task"               run one task and exit
   sigma --resume <id>           resume a session (id or unique prefix)
@@ -80,7 +81,7 @@ func run(args []string) error {
 	case "help":
 		args = append([]string{"-h"}, args...)
 		cmd = ""
-	case "", "tui":
+	case "", "tui", "gui":
 	default:
 		return fmt.Errorf("unknown command %q (try sigma --help)", cmd)
 	}
@@ -107,6 +108,7 @@ func run(args []string) error {
 		continueSess bool
 		showVersion  bool
 		plain        bool
+		port         int
 	)
 	fs.StringVar(&promptStr, "p", "", "one-shot task; sigma exits when the model finishes")
 	fs.StringVar(&mode, "mode", "", "approval mode: plan, ask, or auto")
@@ -120,6 +122,7 @@ func run(args []string) error {
 	fs.BoolVar(&continueSess, "continue", false, "resume the most recent session")
 	fs.BoolVar(&showVersion, "version", false, "print the version and exit")
 	fs.BoolVar(&plain, "plain", false, "line REPL instead of the TUI")
+	fs.IntVar(&port, "port", 0, "sigma gui listen port; 0 picks a free port on 127.0.0.1")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -143,7 +146,10 @@ func run(args []string) error {
 	if cmd == "tui" && strings.TrimSpace(promptStr) != "" {
 		return fmt.Errorf("-p cannot be combined with tui")
 	}
-
+	if cmd == "gui" && (plain || strings.TrimSpace(promptStr) != "") {
+		return fmt.Errorf("gui cannot be combined with --plain or -p")
+	}
+	portSet := false
 	ov := config.Overrides{ConfigPath: configPath, Workspace: workspace}
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
@@ -162,8 +168,13 @@ func run(args []string) error {
 		case "max-steps":
 			ov.MaxStepsSet = true
 			ov.MaxSteps = maxSteps
+		case "port":
+			portSet = true
 		}
 	})
+	if portSet && cmd != "gui" {
+		return fmt.Errorf("--port is only valid with sigma gui")
+	}
 
 	cfg, err := config.Load(ov)
 	if err != nil {
@@ -249,6 +260,9 @@ func run(args []string) error {
 	})
 	defer eng.Close()
 
+	if cmd == "gui" {
+		return runGUI(eng, port)
+	}
 	useTUI := cmd == "tui" || (cmd == "" && !plain && strings.TrimSpace(promptStr) == "" && term.IsTerminal(int(os.Stdout.Fd())))
 	if useTUI && !term.IsTerminal(int(os.Stdout.Fd())) {
 		return fmt.Errorf("the TUI needs a terminal; use --plain otherwise")

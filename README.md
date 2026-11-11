@@ -10,13 +10,14 @@ It is a learning project. The interesting pieces (the engine boundary, the agent
 
 Sigma 是一个用 Go 写的极简编码代理。它通过 OpenAI 兼容接口调用模型，在本地工作区里读文件、搜索、精确替换、写入和执行 bash。
 
-交互默认是 TUI（`sigma` 或 `sigma tui`）：可滚动的对话、Markdown 回复、可折叠的工具块（`edit_file` 会显示 diff）、底部状态栏和输入框。审批在界面里回答 `y` / `n` / `a`，不直接读 stdin。`--plain` 保留原来的逐行 REPL，`-p` 仍然是执行一次后退出。
+交互默认是 TUI（`sigma` 或 `sigma tui`）：可滚动的对话、Markdown 回复、可折叠的工具块（`edit_file` 会显示 diff）、底部状态栏和输入框。`sigma gui` 在 `127.0.0.1` 上打开本地网页，启动时带一个随机 token，别人连上端口也驱动不了代理。`--plain` 保留原来的逐行 REPL，`-p` 仍然是执行一次后退出。
 
 在 `~/.config/sigma/config.toml` 或项目里的 `.sigma.toml` 中设置 `base_url`、`model` 和 `api_key`。没有默认模型；缺少模型或地址时程序会直接退出并说明原因。环境变量 `SIGMA_BASE_URL`、`SIGMA_MODEL`、`SIGMA_API_KEY` 以及对应的命令行参数会覆盖配置文件。
 
 - `sigma`：终端上打开 TUI，否则进入纯文本 REPL
 - `sigma tui`：强制 TUI
 - `sigma --plain`：纯文本 REPL
+- `sigma gui`：本地网页界面（只监听 127.0.0.1，URL 里带一次性 token）
 - `sigma -p "任务"`：执行一次后退出
 - `sigma --resume <id>` / `sigma --continue`：从会话日志恢复
 
@@ -85,6 +86,8 @@ Optional instruction files are appended to the system prompt: `~/.config/sigma/A
 sigma                              # TUI on a terminal, plain REPL otherwise
 sigma tui                          # TUI
 sigma --plain                      # line REPL
+sigma gui                          # local browser UI
+sigma gui --port 8787
 sigma -p "fix the failing test"    # one shot
 sigma --mode plan -p "how does auth work?"
 sigma --resume 20261111            # unique id prefix
@@ -139,6 +142,30 @@ Keys:
 - `/help`, `/mode plan|ask|auto`, `/session`, `/sessions`, `/resume <id>`, `/clear`, `/quit`.
 
 The status bar shows the model, the approval mode, the step count, token totals when the server reports them, the session id, and a shortened workspace path.
+
+### Web GUI
+
+`sigma gui` serves a small page from the binary and opens a browser. It binds to `127.0.0.1` on a free port, or on `--port`. The URL contains a random token that changes every launch. Requests without that token are rejected, the Host must be loopback, and a browser page from another site is rejected by its Origin. Nothing listens on a public interface.
+
+```
+┌ sessions ──────────┐  sigma                          gpt-4o-mini · ask
+│ 20261111-120000-ab │  ┌─────────────────────────────────────────────┐
+│ fix the add test   │  │ you                                         │
+│                    │  │ fix the failing test in add.go              │
+│ [plan] ask [auto]  │  │ sigma                                       │
+│ workspace: ~/src   │  │ I'll replace the return.                    │
+└────────────────────┘  │ ┌ edit_file add.go ────────────────────────┐ │
+                        │ │ - return a - b                           │ │
+                        │ │ + return a + b                           │ │
+                        │ └──────────────────────────────────────────┘ │
+                        │ Allow edit_file?   [Yes] [Always] [No]       │
+                        │ [ message........................ ] [Send]   │
+                        └─────────────────────────────────────────────┘
+```
+
+The page shows the transcript with a small markdown renderer and token coloring in code fences, tool cards with diffs, an approval dialog, the plan/ask/auto switch, a session list that resumes a JSONL log, the workspace path, and a stop button. Enter sends; Shift+Enter inserts a newline. The same slash commands as the TUI work in the input (`/quit` asks you to close the tab; the process stays up until Ctrl-C in the terminal).
+
+Events arrive as Server-Sent Events (`GET /api/events`). Commands are POSTs (`/api/message`, `/api/approval`, `/api/cancel`, `/api/mode`, `/api/resume`, `/api/clear`). The page itself is `embed.FS` under `internal/gui/assets` (plain HTML, CSS, and JS, no Node toolchain). A later [Wails](https://wails.io) shell can load those same files and call the same routes, or talk to the engine in-process. Wails is not a dependency: it needs cgo, and `go test` stays pure Go.
 
 ### Plain REPL
 
@@ -199,9 +226,10 @@ Each run appends JSONL under `~/.local/share/sigma/sessions/` (`$XDG_DATA_HOME/s
 ## Layout
 
 ```
-cmd/sigma            CLI, plain REPL, TUI launch
+cmd/sigma            CLI, plain REPL, TUI and GUI launch
 internal/engine      command loop and the event stream the UIs share
 internal/tui         Bubble Tea transcript, approval prompt, status bar
+internal/gui         localhost page, token check, embedded assets
 internal/agent       one turn: model, tools, repeat
 internal/provider    OpenAI-compatible streaming client, plus a scripted fake
 internal/tools       the six tools
@@ -236,7 +264,7 @@ go vet ./...
 gofmt -l .
 ```
 
-CI runs those three. Coverage is the edit uniqueness rule (including a symlink that points outside the workspace), bash timeout and head/tail truncation, approval ordering, session round-trip and resume, the agent loop against a fake provider (native tools, the bash-fence fallback, plan mode, deny rules, max steps), the engine event stream (text, usage, tool start/finish, approval allow and deny, cancel), TUI update logic (submit, slash commands, approval keys, ctrl+c, folding a tool, rebuilding a resumed transcript), config merge order, and the HTTP client against a local stream.
+CI runs those three. Coverage is the edit uniqueness rule (including a symlink that points outside the workspace), bash timeout and head/tail truncation, approval ordering, session round-trip and resume, the agent loop against a fake provider (native tools, the bash-fence fallback, plan mode, deny rules, max steps), the engine event stream (text, usage, tool start/finish, approval allow and deny, cancel), TUI update logic (submit, slash commands, approval keys, ctrl+c, folding a tool, rebuilding a resumed transcript), the GUI handlers (token required, foreign Host and Origin rejected, SSE events, denying a write), config merge order, and the HTTP client against a local stream.
 
 ## Evals
 
@@ -257,7 +285,7 @@ These tasks need a configured model, so they are not part of GitHub Actions.
 - lint and test feedback after edits
 - a repo map (the Aider idea)
 - ~~a Bubble Tea TUI~~ done (`sigma` / `sigma tui`)
-- a local web GUI on the same engine
+- ~~a local web GUI on the same engine~~ done (`sigma gui`; Wails later, not now)
 - Docker as a `sandbox.Runner`
 
 **v3**
@@ -275,7 +303,8 @@ These tasks need a configured model, so they are not part of GitHub Actions.
 - A fenced bash block with no native tool call is executed, including an example the model did not mean to run. The system prompt warns it.
 - Tool calls in one turn run one after another, so approval prompts stay in order.
 - The TUI needs a real terminal. Token totals stay empty when the server does not report usage.
-- In the plain REPL, Ctrl-C during the `y/n/always` prompt cancels the turn, but the prompt itself waits for Enter. The TUI handles that key immediately.
+- In the plain REPL, Ctrl-C during the `y/n/always` prompt cancels the turn, but the prompt itself waits for Enter. The TUI and the GUI handle that choice immediately.
+- `sigma gui` is a browser page, not a native window. The token is in the URL, so it is visible to anything that can read the terminal or the browser history on this machine.
 - There is no git checkpoint and no Docker sandbox yet.
 
 ## License

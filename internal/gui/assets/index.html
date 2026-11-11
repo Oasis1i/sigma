@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>sigma</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div id="app">
+    <aside>
+      <header class="brand">
+        <span class="mark">σ</span>
+        <div>
+          <strong>sigma</strong>
+          <div id="version" class="muted"></div>
+        </div>
+      </header>
+      <div id="workspace" class="workspace" title=""></div>
+      <div class="mode" role="group" aria-label="Approval mode">
+        <button type="button" data-mode="plan">plan</button>
+        <button type="button" data-mode="ask">ask</button>
+        <button type="button" data-mode="auto">auto</button>
+      </div>
+      <div class="side-head">
+        <h2>Sessions</h2>
+        <button type="button" id="new-session">New</button>
+      </div>
+      <ul id="sessions"></ul>
+    </aside>
+    <main>
+      <div id="transcript" role="log" aria-live="polite"></div>
+      <div id="approval" hidden>
+        <div>
+          <strong id="approval-title">Allow?</strong>
+          <pre id="approval-arg"></pre>
+        </div>
+        <div class="approval-actions">
+          <button type="button" id="allow">Yes</button>
+          <button type="button" id="always">Always</button>
+          <button type="button" id="deny">No</button>
+        </div>
+      </div>
+      <form id="composer">
+        <textarea id="input" rows="3" placeholder="Message sigma. Enter sends, Shift+Enter inserts a newline. /help for commands."></textarea>
+        <div class="composer-bar">
+          <span id="status" class="muted"></span>
+          <button type="button" id="stop" disabled>Stop</button>
+          <button type="submit">Send</button>
+        </div>
+      </form>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
