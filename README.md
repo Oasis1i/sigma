@@ -10,7 +10,7 @@ It is a learning project. The interesting pieces (the engine boundary, the agent
 
 Sigma 是一个用 Go 写的极简编码代理。它通过 OpenAI 兼容接口调用模型，在本地工作区里读文件、搜索、精确替换、写入和执行 bash。
 
-交互默认是 TUI（`sigma` 或 `sigma tui`）：可滚动的对话、Markdown 回复、可折叠的工具块（`edit_file` 会显示 diff）、底部状态栏和输入框。`sigma gui` 在 `127.0.0.1` 上打开本地网页，URL 里带一次性 token，别人连上端口也驱动不了代理。`/mode plan` 时模型只能读仓库并用 `todo_write` 给出计划，你批准后才按之前的审批模式执行。`explore`（也叫 `task`）会启动一个只读子代理，在自己的上下文里搜索并返回摘要。`--plain` 保留原来的逐行 REPL，`-p` 仍然是执行一次后退出。
+交互默认是 TUI（`sigma` 或 `sigma tui`）：可滚动的对话、Markdown 回复、可折叠的工具块（`edit_file` 会显示 diff）、底部状态栏和输入框。`sigma gui` 在 `127.0.0.1` 上打开本地网页，URL 里带一次性 token，别人连上端口也驱动不了代理。`/mode plan` 时模型只能读仓库并用 `todo_write` 给出计划，你批准后才按之前的审批模式执行。`explore`（也叫 `task`）会启动一个只读子代理，在自己的上下文里搜索并返回摘要。配置文件里的 `[[mcp]]` 可以接 stdio 或 HTTP 的 MCP 服务，工具名是 `mcp__服务器__工具`，默认仍走审批。`/mcp` 列出连接状态。`--plain` 保留原来的逐行 REPL，`-p` 仍然是执行一次后退出。
 
 在 `~/.config/sigma/config.toml` 或项目里的 `.sigma.toml` 中设置 `base_url`、`model` 和 `api_key`。没有默认模型；缺少模型或地址时程序会直接退出并说明原因。环境变量 `SIGMA_BASE_URL`、`SIGMA_MODEL`、`SIGMA_API_KEY` 以及对应的命令行参数会覆盖配置文件。
 
@@ -25,7 +25,7 @@ Sigma 是一个用 Go 写的极简编码代理。它通过 OpenAI 兼容接口�
 
 ## Install
 
-Requires Go 1.22 or newer.
+Requires Go 1.25 or newer. The MCP client uses the official Go SDK, which needs that version.
 
 ```bash
 git clone https://github.com/Oasis1i/sigma
@@ -244,6 +244,14 @@ Paths must stay inside the workspace. A symlink that points outside is rejected.
 
 The TUI shows the todo list above the status bar and folds each subagent into a block. The GUI shows todos in the sidebar and keeps subagent steps collapsed. Both receive the same `todo` and `subagent` events from the engine.
 
+## MCP
+
+`[[mcp]]` entries in the config connect at startup. `command` is a stdio server (the first array element is the program). `url` is a streamable HTTP endpoint. A server that fails to connect is listed by `/mcp` and does not stop the others.
+
+Each remote tool is named `mcp__<server>__<tool>`. It goes through the same approval rules as `bash`. With no matching rule, ask mode prompts before the call. `/mcp` in the TUI and the GUI lists servers, whether they connected, and their tool names.
+
+Sigma needs Go 1.25 because it links [github.com/modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk).
+
 If the model returns no native tool calls but writes a fenced `bash`, `sh`, or `shell` block, Sigma runs that block as `bash`. Other fences are ignored. The system prompt tells the model not to put examples in bash fences.
 
 ## Sessions
@@ -323,7 +331,7 @@ These tasks need a configured model, so they are not part of GitHub Actions.
 **v3**
 
 - ~~subagents and a richer plan mode~~ done (`explore` / `task`, `todo_write`, approve the plan, then execute)
-- an MCP client
+- ~~an MCP client~~ done (`[[mcp]]` stdio or streamable HTTP, `mcp__server__tool`, `/mcp`)
 - a SWE-bench Lite subset compared with mini-swe-agent
 
 ## Limitations

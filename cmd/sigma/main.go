@@ -23,6 +23,7 @@ import (
 	"github.com/Oasis1i/sigma/internal/checkpoint"
 	"github.com/Oasis1i/sigma/internal/config"
 	"github.com/Oasis1i/sigma/internal/engine"
+	"github.com/Oasis1i/sigma/internal/mcpclient"
 	"github.com/Oasis1i/sigma/internal/prompt"
 	"github.com/Oasis1i/sigma/internal/provider"
 	"github.com/Oasis1i/sigma/internal/sandbox"
@@ -273,6 +274,24 @@ func run(args []string) error {
 		return ag.Explore(ctx, task)
 	}
 	ag.Registry = tools.NewRegistry(env)
+	var mcpSummary func() string
+	if len(cfg.MCP) > 0 {
+		mgr, err := mcpclient.Connect(context.Background(), cfg.MCP)
+		if err != nil {
+			sess.Close()
+			return err
+		}
+		defer mgr.Close()
+		for _, tool := range mgr.Tools() {
+			ag.Registry.Add(tool)
+		}
+		mcpSummary = mgr.Summary
+		for _, st := range mgr.Statuses() {
+			if st.Err != "" {
+				fmt.Fprintf(os.Stderr, "sigma: mcp %s: %s\n", st.Name, st.Err)
+			}
+		}
+	}
 	eng := engine.New(ag, engine.Options{
 		SessionDir:  dir,
 		Model:       cfg.Model,
@@ -280,6 +299,7 @@ func run(args []string) error {
 		Workspace:   cfg.Workspace,
 		Verify:      cfg.Verify,
 		Checkpoints: cp,
+		MCPStatus:   mcpSummary,
 	})
 	defer eng.Close()
 
