@@ -372,6 +372,47 @@ func TestModeSwitchIsNotTheSessionTitle(t *testing.T) {
 	}
 }
 
+func TestGUIModelSwitch(t *testing.T) {
+	script := &provider.Scripted{Responses: []provider.Response{{Content: "ok"}}}
+	_, _, httpSrv := testStack(t, "ask", script)
+	req, err := http.NewRequest(http.MethodPost, httpSrv.URL+"/api/model", strings.NewReader(`{"model":"other-model"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer test-token-0123456789abcdef")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := httpSrv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(res.Body)
+		t.Fatalf("status %s %s", res.Status, b)
+	}
+	if script.CurrentModel() != "other-model" {
+		t.Fatalf("model %s", script.CurrentModel())
+	}
+	stateReq, _ := http.NewRequest(http.MethodGet, httpSrv.URL+"/api/state", nil)
+	stateReq.Header.Set("Authorization", "Bearer test-token-0123456789abcdef")
+	stateRes, err := httpSrv.Client().Do(stateReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stateRes.Body.Close()
+	var state stateJSON
+	if err := json.NewDecoder(stateRes.Body).Decode(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Model != "other-model" || state.Provider == "" {
+		t.Fatalf("%+v", state)
+	}
+	raw, _ := json.Marshal(state.Auth)
+	if strings.Contains(string(raw), "access_token") || strings.Contains(string(raw), "refresh_token") {
+		t.Fatalf("auth status leaked a token: %s", raw)
+	}
+}
+
 func workspaceFrom(t *testing.T, httpSrv *httptest.Server) string {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodGet, httpSrv.URL+"/api/state", nil)

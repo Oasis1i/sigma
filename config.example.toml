@@ -18,6 +18,13 @@ api_key = "sk-replace-me"
 # gemini = false
 # grok = false
 
+# The read-only explore subagent can use a different provider. Leave these
+# unset to reuse the parent client.
+# subagent_provider = "openai"
+# subagent_model = "gpt-4o-mini"
+# subagent_base_url = "https://api.openai.com/v1"
+# subagent_api_key = "sk-replace-me"
+
 # plan (read-only) | ask (prompt before writes) | auto (run what the rules allow)
 approval_mode = "ask"
 max_steps = 50

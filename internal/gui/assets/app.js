@@ -85,6 +85,7 @@ async function refresh() {
   ws.textContent = state.workspace || "";
   ws.title = state.workspace || "";
   setMode(state.mode);
+  renderAccount(state);
   renderMessages(state.messages || []);
   renderTodos(state.todos || []);
   setStatus(state);
@@ -97,6 +98,54 @@ function setMode(next) {
     btn.classList.toggle("active", btn.dataset.mode === mode);
   });
 }
+
+function renderAccount(state) {
+  const provider = document.querySelector("#provider");
+  if (provider && state.provider) provider.value = state.provider;
+  const model = document.querySelector("#model-name");
+  if (model && document.activeElement !== model) model.value = state.model || "";
+  const list = document.querySelector("#model-list");
+  if (list) {
+    list.replaceChildren();
+    (state.models || []).forEach((name) => {
+      const opt = document.createElement("option");
+      opt.value = name;
+      list.appendChild(opt);
+    });
+  }
+  const auth = document.querySelector("#auth");
+  if (!auth) return;
+  auth.replaceChildren();
+  (state.auth || []).forEach((row) => {
+    const li = document.createElement("li");
+    if (row.logged_in) {
+      li.className = "logged-in";
+      li.textContent = row.provider + " · " + (row.email || row.account_id || "signed in");
+    } else {
+      li.textContent = row.provider + " · signed out";
+    }
+    auth.appendChild(li);
+  });
+}
+
+async function saveAccount() {
+  const provider = document.querySelector("#provider").value;
+  const model = document.querySelector("#model-name").value;
+  const res = await api("/api/model", {
+    method: "POST",
+    body: JSON.stringify({ provider, model }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    addError(body.error || "could not change provider");
+    await refresh();
+    return;
+  }
+  addNotice("provider: " + provider + (model ? " · " + model : ""));
+}
+
+document.querySelector("#provider").addEventListener("change", saveAccount);
+document.querySelector("#model-name").addEventListener("change", saveAccount);
 
 function setStatus(state) {
   const tokens = (state.prompt_tokens || 0) + (state.completion_tokens || 0);

@@ -34,13 +34,16 @@ type AskFunc func(ctx context.Context, tool, arg string) (allow bool, always boo
 
 // Agent runs turns against one workspace.
 type Agent struct {
-	Client   provider.Client
-	Registry *tools.Registry
-	Policy   *approval.Policy
-	Session  *session.Session
-	Messages []provider.Message
-	MaxSteps int
-	Ask      AskFunc
+	Client provider.Client
+	// ExploreClient is optional. When set, the read-only subagent uses it
+	// instead of Client, so a search can run on a different provider.
+	ExploreClient provider.Client
+	Registry      *tools.Registry
+	Policy        *approval.Policy
+	Session       *session.Session
+	Messages      []provider.Message
+	MaxSteps      int
+	Ask           AskFunc
 	// Hooks receives the same facts a UI renders. The engine sets this.
 	// Out and Err remain for a caller that drives RunTurn directly: Out is
 	// assistant text, Err is steps, tool traces, and denials.

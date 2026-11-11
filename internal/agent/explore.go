@@ -31,6 +31,10 @@ func (a *Agent) Explore(ctx context.Context, task string) (string, error) {
 	if a == nil || a.Client == nil || a.Registry == nil {
 		return "", errNoExplore
 	}
+	childClient := a.Client
+	if a.ExploreClient != nil {
+		childClient = a.ExploreClient
+	}
 	id := a.nextSubID()
 	a.Hooks.subagent(SubagentEvent{Phase: "start", ID: id, Text: task})
 
@@ -49,7 +53,7 @@ func (a *Agent) Explore(ctx context.Context, task string) (string, error) {
 		return "", err
 	}
 	child := &Agent{
-		Client:      a.Client,
+		Client:      childClient,
 		Registry:    tools.NewReadOnlyRegistry(childEnv),
 		Policy:      policy,
 		MaxSteps:    steps,

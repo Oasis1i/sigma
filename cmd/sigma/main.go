@@ -289,8 +289,14 @@ func run(args []string) error {
 		sess.Close()
 		return err
 	}
+	child, err := subagentClient(cfg)
+	if err != nil {
+		sess.Close()
+		return err
+	}
 	ag := &agent.Agent{
 		Client:           client,
+		ExploreClient:    child,
 		Policy:           policy,
 		Session:          sess,
 		Messages:         messages,
@@ -326,10 +332,21 @@ func run(args []string) error {
 		}
 	}
 	eng := engine.New(ag, engine.Options{
-		SessionDir:  dir,
-		Model:       cfg.Model,
-		Models:      cfg.Models,
-		BaseURL:     cfg.BaseURL,
+		SessionDir: dir,
+		Model:      cfg.Model,
+		Models:     cfg.Models,
+		Provider:   cfg.Provider,
+		BaseURL:    cfg.BaseURL,
+		Replace: func(providerName, model string) (provider.Client, error) {
+			next := cfg
+			if providerName != "" {
+				next.Provider = providerName
+			}
+			if model != "" {
+				next.Model = model
+			}
+			return buildClient(next)
+		},
 		Workspace:   cfg.Workspace,
 		Verify:      cfg.Verify,
 		Checkpoints: cp,
