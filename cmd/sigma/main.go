@@ -43,6 +43,9 @@ Usage:
   sigma gui                     local web UI on 127.0.0.1
   sigma --plain                 line REPL, even on a terminal
   sigma -p "task"               run one task and exit
+  sigma -p "task" --output json one JSON report on stdout
+  sigma -p "task" --output jsonl
+                            one JSON event per line
   sigma --resume <id>           resume a session (id or unique prefix)
   sigma --continue              resume the most recent session
 
@@ -111,6 +114,7 @@ func run(args []string) error {
 		showVersion  bool
 		plain        bool
 		port         int
+		outputFmt    string
 	)
 	fs.StringVar(&promptStr, "p", "", "one-shot task; sigma exits when the model finishes")
 	fs.StringVar(&mode, "mode", "", "approval mode: plan, ask, or auto")
@@ -125,6 +129,7 @@ func run(args []string) error {
 	fs.BoolVar(&showVersion, "version", false, "print the version and exit")
 	fs.BoolVar(&plain, "plain", false, "line REPL instead of the TUI")
 	fs.IntVar(&port, "port", 0, "sigma gui listen port; 0 picks a free port on 127.0.0.1")
+	fs.StringVar(&outputFmt, "output", "text", "with -p: text, json, or jsonl")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -150,6 +155,14 @@ func run(args []string) error {
 	}
 	if cmd == "gui" && (plain || strings.TrimSpace(promptStr) != "") {
 		return fmt.Errorf("gui cannot be combined with --plain or -p")
+	}
+	switch outputFmt {
+	case "text", "json", "jsonl":
+	default:
+		return fmt.Errorf("--output must be text, json, or jsonl")
+	}
+	if outputFmt != "text" && strings.TrimSpace(promptStr) == "" {
+		return fmt.Errorf("--output %s is only valid with -p", outputFmt)
 	}
 	portSet := false
 	ov := config.Overrides{ConfigPath: configPath, Workspace: workspace}
@@ -318,7 +331,7 @@ func run(args []string) error {
 			fmt.Fprintf(os.Stderr, "sigma: session %s\n", sess.ID)
 		}
 		fmt.Fprintf(os.Stderr, "sigma: mode %s, workspace %s\n", policy.Current(), cfg.Workspace)
-		return runPlain(eng, promptStr, newSigLoop(eng))
+		return runPlain(eng, promptStr, newSigLoop(eng), outputFmt)
 	}
 	return tui.Run(eng, eng.Events(), version)
 }

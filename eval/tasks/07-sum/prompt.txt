@@ -1,0 +1,1 @@
+Sum should add every int in the slice. An empty slice is 0.

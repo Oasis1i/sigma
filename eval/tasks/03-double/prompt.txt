@@ -1,0 +1,1 @@
+Write Double in double.go. It returns its int argument times two.

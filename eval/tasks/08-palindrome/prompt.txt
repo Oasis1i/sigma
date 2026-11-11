@@ -1,0 +1,1 @@
+IsPalindrome should report whether s reads the same forwards and backwards. Compare runes. Case matters.

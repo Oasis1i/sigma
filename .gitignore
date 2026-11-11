@@ -2,3 +2,6 @@
 *.exe
 *.test
 /dist/
+/eval/results/
+/eval/predictions.jsonl
+/eval/baseline.jsonl

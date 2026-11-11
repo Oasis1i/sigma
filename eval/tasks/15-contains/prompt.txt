@@ -1,0 +1,1 @@
+Contains reports whether sub is a substring of s. The empty string is contained in every string.

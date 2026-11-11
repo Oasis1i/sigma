@@ -1,0 +1,1 @@
+script.sh should print ok and exit 0. It currently prints no.
