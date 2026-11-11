@@ -1,12 +1,14 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Oasis1i/sigma/internal/engine"
+	"github.com/Oasis1i/sigma/internal/tools"
 )
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -201,6 +203,15 @@ func (m *Model) apply(ev engine.Event) {
 	case engine.KindNotice:
 		m.finishStream()
 		m.blocks = append(m.blocks, block{kind: blockNotice, text: ev.Text})
+	case engine.KindSubagent:
+		m.finishStream()
+		m.applySubagent(ev)
+	case engine.KindTodo:
+		m.todos = append([]tools.Todo(nil), ev.Todos...)
+		if m.ready {
+			m.layout()
+			return
+		}
 	case engine.KindError:
 		m.finishStream()
 		text := ev.Text
@@ -275,6 +286,36 @@ func (m *Model) collapseOlderTools() {
 			m.blocks[i].collapsed = true
 		}
 	}
+}
+
+func (m *Model) applySubagent(ev engine.Event) {
+	for i := range m.blocks {
+		if m.blocks[i].kind == blockSubagent && m.blocks[i].callID == ev.SubagentID {
+			switch ev.Phase {
+			case "step":
+				line := ev.Text
+				if ev.Step > 0 {
+					line = fmt.Sprintf("step %d/%d %s", ev.Step, ev.MaxSteps, ev.Text)
+				}
+				if strings.TrimSpace(line) != "" {
+					m.blocks[i].steps = append(m.blocks[i].steps, strings.TrimSpace(line))
+				}
+			case "end":
+				m.blocks[i].output = ev.Text
+				m.blocks[i].failed = ev.Failed
+				m.blocks[i].running = false
+				m.blocks[i].collapsed = true
+			}
+			return
+		}
+	}
+	m.blocks = append(m.blocks, block{
+		kind:      blockSubagent,
+		callID:    ev.SubagentID,
+		text:      ev.Text,
+		running:   ev.Phase != "end",
+		collapsed: true,
+	})
 }
 
 func (m *Model) toggleLastTool() {

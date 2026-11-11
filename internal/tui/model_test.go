@@ -8,6 +8,7 @@ import (
 
 	"github.com/Oasis1i/sigma/internal/engine"
 	"github.com/Oasis1i/sigma/internal/provider"
+	"github.com/Oasis1i/sigma/internal/tools"
 )
 
 type fakeCtl struct {
@@ -270,6 +271,29 @@ func TestModeNoteIsNotAUserBubble(t *testing.T) {
 	}
 	if !sawNote || !sawUser {
 		t.Fatalf("blocks %+v", m.blocks)
+	}
+}
+
+func TestSubagentAndTodosRender(t *testing.T) {
+	m := newTestModel(&fakeCtl{})
+	m.Update(engine.Event{Kind: engine.KindSubagent, Phase: "start", SubagentID: "sub_1", Text: "where is add?"})
+	m.Update(engine.Event{Kind: engine.KindSubagent, Phase: "step", SubagentID: "sub_1", Step: 1, MaxSteps: 4, Text: "list_dir ."})
+	m.Update(engine.Event{Kind: engine.KindSubagent, Phase: "end", SubagentID: "sub_1", Text: "add is in add.go"})
+	m.Update(engine.Event{Kind: engine.KindTodo, Todos: []tools.Todo{{ID: "1", Content: "fix add", Status: "pending"}}})
+	var sub *block
+	for i := range m.blocks {
+		if m.blocks[i].kind == blockSubagent {
+			sub = &m.blocks[i]
+		}
+	}
+	if sub == nil || !sub.collapsed || sub.output != "add is in add.go" || len(sub.steps) == 0 {
+		t.Fatalf("subagent %+v", sub)
+	}
+	if len(m.todos) != 1 || m.todos[0].Content != "fix add" {
+		t.Fatalf("todos %+v", m.todos)
+	}
+	if !strings.Contains(stripANSI(m.View()), "fix add") {
+		t.Fatal("todo panel missing")
 	}
 }
 

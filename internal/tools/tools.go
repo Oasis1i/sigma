@@ -30,10 +30,14 @@ type Tool interface {
 }
 
 // Env is the workspace a tool runs against. Runner is only required by bash.
+// Explore and Todos are optional. The parent agent sets them so the explore
+// tool can spawn a child and todo_write can publish the plan.
 type Env struct {
 	Workspace   string
 	Runner      sandbox.Runner
 	BashTimeout time.Duration
+	Explore     ExploreFunc
+	Todos       *Todos
 }
 
 // Registry holds the tools in the order they are shown to the model.
@@ -53,6 +57,9 @@ func NewRegistry(env *Env) *Registry {
 		&readFile{},
 		&listDir{},
 		&grepTool{},
+		exploreTool{name: "explore"},
+		exploreTool{name: "task"},
+		todoWrite{},
 		&editFile{},
 		&writeFile{},
 		&bashTool{},
@@ -63,7 +70,20 @@ func NewRegistry(env *Env) *Registry {
 	return r
 }
 
-// Specs returns every tool schema.
+// Env returns the workspace this registry runs against.
+func (r *Registry) Env() *Env { return r.env }
+
+// NewReadOnlyRegistry is the tool set a subagent gets: read, list, and grep.
+// It does not include explore, so a child cannot spawn another child, and it
+// does not include todo_write, so the child cannot rewrite the parent's plan.
+func NewReadOnlyRegistry(env *Env) *Registry {
+	r := &Registry{env: env, byName: map[string]Tool{}}
+	for _, t := range []Tool{&readFile{}, &listDir{}, &grepTool{}} {
+		r.list = append(r.list, t)
+		r.byName[t.Spec().Name] = t
+	}
+	return r
+}
 func (r *Registry) Specs() []Spec {
 	out := make([]Spec, 0, len(r.list))
 	for _, t := range r.list {

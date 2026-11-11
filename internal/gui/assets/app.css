@@ -103,6 +103,11 @@ aside {
   font-weight: 600;
 }
 
+#todos { list-style: none; margin: 0; padding: 0; overflow: auto; max-height: 30vh; }
+#todos li { font-size: 13px; padding: 4px 0; }
+#todos li.done { color: var(--muted); text-decoration: line-through; }
+.subagent summary { color: var(--blue); }
+
 #sessions {
   list-style: none;
   margin: 0;

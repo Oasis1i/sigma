@@ -102,6 +102,16 @@ func consumeTurn(eng *engine.Engine, in *bufio.Reader) error {
 		case engine.KindUsage:
 			finishLine(&lineOpen)
 			fmt.Fprintf(os.Stderr, "· tokens %d (prompt %d, completion %d)\n", ev.TotalTokens, ev.PromptTokens, ev.CompletionTokens)
+		case engine.KindSubagent:
+			finishLine(&lineOpen)
+			if ev.Phase == "step" && ev.Step > 0 {
+				fmt.Fprintf(os.Stderr, "· explore %s step %d/%d %s\n", ev.SubagentID, ev.Step, ev.MaxSteps, clip(ev.Text, 80))
+			} else {
+				fmt.Fprintf(os.Stderr, "· explore %s %s %s\n", ev.SubagentID, ev.Phase, clip(ev.Text, 120))
+			}
+		case engine.KindTodo:
+			finishLine(&lineOpen)
+			fmt.Fprintf(os.Stderr, "· todos updated (%d)\n", len(ev.Todos))
 		case engine.KindApproval:
 			finishLine(&lineOpen)
 			allow, always := askOnTerminal(in, ev)

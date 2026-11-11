@@ -21,6 +21,9 @@ compact_threshold = 80000
 sandbox = "local"
 # docker_image = "golang:1.22"
 
+# explore_max_steps = 8
+# explore_max_tokens = 8000
+
 # Commands run after a successful edit_file or write_file. A non-zero exit
 # is shown to the model so it can fix the failure. Leave this unset to skip.
 # verify = ["go vet ./...", "go test ./..."]

@@ -22,6 +22,8 @@ const (
 	DefaultMode             = "ask"
 	DefaultCompactThreshold = 80000
 	DefaultSandbox          = "local"
+	DefaultExploreSteps     = 8
+	DefaultExploreTokens    = 8000
 )
 
 // Rule is one approval pattern from a config file.
@@ -44,6 +46,8 @@ type file struct {
 	Sandbox          string   `toml:"sandbox"`
 	DockerImage      string   `toml:"docker_image"`
 	Verify           []string `toml:"verify"`
+	ExploreMaxSteps  int      `toml:"explore_max_steps"`
+	ExploreMaxTokens int      `toml:"explore_max_tokens"`
 	Rules            []Rule   `toml:"rules"`
 }
 
@@ -62,9 +66,11 @@ type Config struct {
 	CompactThreshold int
 	// Verify commands run after a successful edit_file or write_file.
 	// Failures are given back to the model. Empty disables the feature.
-	Verify      []string
-	Sandbox     string // local or docker
-	DockerImage string
+	Verify           []string
+	Sandbox          string // local or docker
+	DockerImage      string
+	ExploreMaxSteps  int
+	ExploreMaxTokens int
 }
 
 // Overrides carries CLI flags. A Set field replaces the loaded value even
@@ -115,6 +121,8 @@ func Load(ov Overrides) (Config, error) {
 		Workspace:        workspace,
 		CompactThreshold: DefaultCompactThreshold,
 		Sandbox:          DefaultSandbox,
+		ExploreMaxSteps:  DefaultExploreSteps,
+		ExploreMaxTokens: DefaultExploreTokens,
 	}
 
 	if ov.ConfigPath != "" {
@@ -213,6 +221,12 @@ func apply(cfg *Config, f file, md toml.MetaData) {
 	if md.IsDefined("verify") {
 		cfg.Verify = append(cfg.Verify, f.Verify...)
 	}
+	if f.ExploreMaxSteps > 0 {
+		cfg.ExploreMaxSteps = f.ExploreMaxSteps
+	}
+	if f.ExploreMaxTokens > 0 {
+		cfg.ExploreMaxTokens = f.ExploreMaxTokens
+	}
 }
 
 func validate(cfg *Config) error {
@@ -295,6 +309,9 @@ func readFile(path string) (file, toml.MetaData, bool, error) {
 	}
 	if f.CompactThreshold < 0 {
 		return file{}, md, true, fmt.Errorf("%s: compact_threshold must be zero or positive", path)
+	}
+	if f.ExploreMaxSteps < 0 || f.ExploreMaxTokens < 0 {
+		return file{}, md, true, fmt.Errorf("%s: explore limits must be positive", path)
 	}
 	return f, md, true, nil
 }

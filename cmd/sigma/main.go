@@ -32,7 +32,7 @@ import (
 	"golang.org/x/term"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 const usageText = `sigma is a minimal coding agent.
 
@@ -249,13 +249,14 @@ func run(args []string) error {
 		return err
 	}
 	cp := &checkpoint.Store{Dir: cfg.Workspace, Session: sess.ID}
-	eng := engine.New(&agent.Agent{
-		Client: provider.NewOpenAI(cfg.BaseURL, cfg.APIKey, cfg.Model, nil),
-		Registry: tools.NewRegistry(&tools.Env{
-			Workspace:   cfg.Workspace,
-			Runner:      runner,
-			BashTimeout: time.Duration(cfg.BashTimeoutSec) * time.Second,
-		}),
+	env := &tools.Env{
+		Workspace:   cfg.Workspace,
+		Runner:      runner,
+		BashTimeout: time.Duration(cfg.BashTimeoutSec) * time.Second,
+		Todos:       tools.NewTodos(),
+	}
+	ag := &agent.Agent{
+		Client:           provider.NewOpenAI(cfg.BaseURL, cfg.APIKey, cfg.Model, nil),
 		Policy:           policy,
 		Session:          sess,
 		Messages:         messages,
@@ -264,7 +265,15 @@ func run(args []string) error {
 		Verify:           cfg.Verify,
 		VerifyRunner:     local,
 		VerifyTimeout:    time.Duration(cfg.BashTimeoutSec) * time.Second,
-	}, engine.Options{
+		Todos:            env.Todos,
+		ExploreMaxSteps:  cfg.ExploreMaxSteps,
+		ExploreMaxTokens: cfg.ExploreMaxTokens,
+	}
+	env.Explore = func(ctx context.Context, task string) (string, error) {
+		return ag.Explore(ctx, task)
+	}
+	ag.Registry = tools.NewRegistry(env)
+	eng := engine.New(ag, engine.Options{
 		SessionDir:  dir,
 		Model:       cfg.Model,
 		BaseURL:     cfg.BaseURL,

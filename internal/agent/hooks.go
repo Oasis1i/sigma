@@ -1,5 +1,7 @@
 package agent
 
+import "github.com/Oasis1i/sigma/internal/tools"
+
 // ToolEvent describes one tool call for a UI. Args is the raw JSON the model
 // sent. Preview is the short string the approval rules match (the command, or
 // the path). Diff is set for edit_file and is the change the model asked for,
@@ -28,6 +30,20 @@ type Hooks struct {
 	ToolEnd   func(ToolEvent)
 	Notice    func(text string)
 	Usage     func(prompt, completion, total int)
+	// Subagent reports a read-only explore/task child. Phase is start, step, or end.
+	Subagent func(SubagentEvent)
+	// Todo is the current plan list after todo_write.
+	Todo func(items []tools.Todo)
+}
+
+// SubagentEvent is one progress update from a child explore/task agent.
+type SubagentEvent struct {
+	Phase  string
+	ID     string
+	Text   string
+	Step   int
+	Max    int
+	Failed bool
 }
 
 func (h *Hooks) textDelta(text string) {
@@ -63,5 +79,17 @@ func (h *Hooks) notice(text string) {
 func (h *Hooks) usage(prompt, completion, total int) {
 	if h != nil && h.Usage != nil && (prompt > 0 || completion > 0 || total > 0) {
 		h.Usage(prompt, completion, total)
+	}
+}
+
+func (h *Hooks) subagent(ev SubagentEvent) {
+	if h != nil && h.Subagent != nil {
+		h.Subagent(ev)
+	}
+}
+
+func (h *Hooks) todo(items []tools.Todo) {
+	if h != nil && h.Todo != nil {
+		h.Todo(items)
 	}
 }

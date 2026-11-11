@@ -43,9 +43,16 @@ func (m *Model) layout() {
 	if m.pending != nil {
 		approvalH = 2
 	}
+	todoH := 0
+	if n := len(m.todos); n > 0 {
+		todoH = n + 1
+		if todoH > 7 {
+			todoH = 7
+		}
+	}
 	const statusH = 1
 	const inputH = 3
-	vpH := m.height - statusH - approvalH - inputH
+	vpH := m.height - statusH - approvalH - inputH - todoH
 	if vpH < 1 {
 		vpH = 1
 	}
@@ -73,12 +80,41 @@ func (m *Model) View() string {
 	if !m.ready {
 		return "starting sigma…"
 	}
-	parts := []string{m.vp.View(), m.statusBar()}
+	parts := []string{m.vp.View()}
+	if todo := m.todosView(); todo != "" {
+		parts = append(parts, todo)
+	}
+	parts = append(parts, m.statusBar())
 	if m.pending != nil {
 		parts = append(parts, m.approvalView())
 	}
 	parts = append(parts, m.ta.View())
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+func (m *Model) todosView() string {
+	if len(m.todos) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(sigmaStyle.Render("todos"))
+	n := len(m.todos)
+	if n > 6 {
+		n = 6
+	}
+	for _, item := range m.todos[:n] {
+		mark := "·"
+		if item.Status == "completed" {
+			mark = "✓"
+		} else if item.Status == "in_progress" {
+			mark = "…"
+		}
+		fmt.Fprintf(&b, "\n %s %s", mark, oneLine(item.Content, m.width-4))
+	}
+	if len(m.todos) > n {
+		fmt.Fprintf(&b, "\n … %d more", len(m.todos)-n)
+	}
+	return b.String()
 }
 
 func (m *Model) statusBar() string {
@@ -147,6 +183,8 @@ func (m *Model) renderBlock(blk *block, width int) string {
 		return errorStyle.Render(wrap(blk.text, width))
 	case blockTool:
 		return m.renderTool(blk, width)
+	case blockSubagent:
+		return m.renderSubagent(blk, width)
 	default:
 		return blk.text
 	}
@@ -205,6 +243,34 @@ func (m *Model) renderTool(blk *block, width int) string {
 	boxWidth := width
 	if boxWidth > 2 {
 		boxWidth -= 1
+	}
+	return toolStyle.Width(boxWidth).Render(body)
+}
+
+func (m *Model) renderSubagent(blk *block, width int) string {
+	title := "explore"
+	if blk.text != "" {
+		title += "  " + oneLine(blk.text, 60)
+	}
+	if blk.running {
+		title += "  " + faint.Render("running")
+	}
+	body := title
+	if !blk.collapsed {
+		var parts []string
+		parts = append(parts, blk.steps...)
+		if blk.output != "" {
+			parts = append(parts, blk.output)
+		}
+		if len(parts) > 0 {
+			body += "\n" + strings.Join(parts, "\n")
+		}
+	} else if blk.output != "" {
+		body += "\n" + oneLine(blk.output, 100)
+	}
+	boxWidth := width
+	if boxWidth > 2 {
+		boxWidth--
 	}
 	return toolStyle.Width(boxWidth).Render(body)
 }

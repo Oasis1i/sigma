@@ -46,7 +46,7 @@ Guidelines:
 
 	switch mode {
 	case "plan":
-		b.WriteString("Plan mode is read-only. edit_file, write_file, and bash will be denied. Investigate and write a plan. Do not claim you changed files.\n")
+		b.WriteString("Plan mode is read-only. edit_file, write_file, and bash will be denied. Use read_file, list_dir, grep, and explore to investigate, then call todo_write with the plan. Stop after the list is published. The user approves it before any edits. Do not claim you changed files.\n")
 	case "ask":
 		b.WriteString("Mutating tools may wait for the user to approve them before they run.\n")
 	case "auto":

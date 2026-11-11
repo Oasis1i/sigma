@@ -20,6 +20,7 @@ import (
 	"github.com/Oasis1i/sigma/internal/engine"
 	"github.com/Oasis1i/sigma/internal/provider"
 	"github.com/Oasis1i/sigma/internal/session"
+	"github.com/Oasis1i/sigma/internal/tools"
 )
 
 // Controller is the slice of the engine the TUI uses. *engine.Engine
@@ -52,6 +53,7 @@ const (
 	blockTool
 	blockNotice
 	blockError
+	blockSubagent
 )
 
 type block struct {
@@ -70,6 +72,7 @@ type block struct {
 	running   bool
 	collapsed bool
 	streaming bool
+	steps     []string
 }
 
 // Model is the Bubble Tea model. The viewport holds the transcript, the
@@ -89,6 +92,7 @@ type Model struct {
 	mode, modelName, sessionID, wsPath string
 	step, maxStep                      int
 	promptTokens, completionTokens     int
+	todos                              []tools.Todo
 	running                            bool
 	pending                            *engine.Event
 	lastInterrupt                      time.Time

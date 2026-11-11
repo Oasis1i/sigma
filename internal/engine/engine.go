@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/Oasis1i/sigma/internal/agent"
+	"github.com/Oasis1i/sigma/internal/approval"
 	"github.com/Oasis1i/sigma/internal/checkpoint"
 	"github.com/Oasis1i/sigma/internal/prompt"
 	"github.com/Oasis1i/sigma/internal/provider"
 	"github.com/Oasis1i/sigma/internal/session"
+	"github.com/Oasis1i/sigma/internal/tools"
 )
 
 // Options is the identity of a run. The engine needs it to open another
@@ -44,6 +47,10 @@ type Engine struct {
 	workspace string
 	verify    []string
 	cp        *checkpoint.Store
+	// execMode is the approval mode to restore after the user approves a plan.
+	// Entering plan mode saves the mode that was active. Starting already in
+	// plan mode leaves this as ask.
+	execMode string
 
 	events   chan Event
 	cmds     chan Command
@@ -80,6 +87,7 @@ func New(ag *agent.Agent, opt Options) *Engine {
 		workspace:  opt.Workspace,
 		verify:     append([]string(nil), opt.Verify...),
 		cp:         opt.Checkpoints,
+		execMode:   "ask",
 		events:     make(chan Event, 128),
 		cmds:       make(chan Command, 32),
 		decision:   make(chan decision, 1),
@@ -110,6 +118,25 @@ func New(ag *agent.Agent, opt Options) *Engine {
 				TotalTokens:      total,
 			})
 		},
+		Subagent: func(ev agent.SubagentEvent) {
+			e.emit(Event{
+				Kind:       KindSubagent,
+				Phase:      ev.Phase,
+				SubagentID: ev.ID,
+				Text:       ev.Text,
+				Step:       ev.Step,
+				MaxSteps:   ev.Max,
+				Failed:     ev.Failed,
+			})
+		},
+		Todo: func(items []tools.Todo) {
+			e.emit(Event{Kind: KindTodo, Todos: items})
+		},
+	}
+	if ag.Todos != nil {
+		ag.Todos.SetOnChange(func(items []tools.Todo) {
+			e.emit(Event{Kind: KindTodo, Todos: items})
+		})
 	}
 	ag.Ask = e.ask
 	go e.loop()
@@ -196,6 +223,14 @@ func (e *Engine) Usage() (prompt, completion int) {
 	return e.promptTokens, e.completionTokens
 }
 
+// Todos returns the current plan list. Nil when the agent has no list.
+func (e *Engine) Todos() []tools.Todo {
+	if e == nil || e.ag == nil || e.ag.Todos == nil {
+		return nil
+	}
+	return e.ag.Todos.Snapshot()
+}
+
 // Messages returns a copy of the conversation. Call it when no turn is
 // running (after /resume or /clear). The copy's backing array is new; the
 // message contents are shared, and the loop does not mutate them in place.
@@ -209,14 +244,23 @@ func (e *Engine) Messages() []provider.Message {
 }
 
 // SetMode changes the policy and rewrites the system prompt's "Approval mode:"
-// line. It does not append a user message: that note was showing up as a
-// "you" turn and as the session title. The UI renders the slash result itself.
+// line. It does not append a user message. Switching to plan remembers the
+// previous mode so an approved plan can execute there.
 func (e *Engine) SetMode(mode string) error {
 	if e.Busy() {
 		return fmt.Errorf("wait for the current turn to finish before changing mode")
 	}
+	return e.applyMode(mode)
+}
+
+// applyMode is SetMode without the busy check. The plan-approval path calls
+// it from the turn goroutine, which is the only writer at that moment.
+func (e *Engine) applyMode(mode string) error {
 	if e.ag == nil || e.ag.Policy == nil {
 		return fmt.Errorf("no approval policy")
+	}
+	if mode == string(approval.ModePlan) && e.ag.Policy.Current() != approval.ModePlan {
+		e.execMode = string(e.ag.Policy.Current())
 	}
 	prev := e.Mode()
 	if err := e.ag.Policy.SetMode(mode); err != nil {
@@ -405,7 +449,7 @@ func (e *Engine) startTurn(text string) {
 
 	go func() {
 		e.snapshot(ctx)
-		err := e.ag.RunTurn(ctx, text)
+		err := e.runPlanAware(ctx, text)
 		e.mu.Lock()
 		e.busy = false
 		e.turnCancel = nil
@@ -416,6 +460,52 @@ func (e *Engine) startTurn(text string) {
 		}
 		e.emit(Event{Kind: KindDone, Canceled: canceled})
 	}()
+}
+
+// runPlanAware runs the user turn. If that turn was in plan mode and produced
+// a todo list, it waits for approval and, on yes, continues in the saved
+// execution mode. The whole sequence stays one turn so the UI can show the
+// approval prompt before Done.
+func (e *Engine) runPlanAware(ctx context.Context, text string) error {
+	err := e.ag.RunTurn(ctx, text)
+	if err != nil || e.ag.Policy == nil || e.ag.Policy.Current() != approval.ModePlan {
+		return err
+	}
+	todos := []tools.Todo(nil)
+	if e.ag.Todos != nil {
+		todos = e.ag.Todos.Snapshot()
+	}
+	if len(todos) == 0 {
+		return nil
+	}
+	allow, _, aerr := e.ask(ctx, "plan", formatTodos(todos))
+	if aerr != nil {
+		return aerr
+	}
+	if !allow {
+		e.emit(Event{Kind: KindNotice, Text: "plan rejected"})
+		return nil
+	}
+	execMode := e.execMode
+	if execMode == "" || execMode == string(approval.ModePlan) {
+		execMode = string(approval.ModeAsk)
+	}
+	if err := e.applyMode(execMode); err != nil {
+		return err
+	}
+	e.emit(Event{Kind: KindNotice, Text: "plan approved; executing in " + execMode + " mode"})
+	return e.ag.RunTurn(ctx, "The user approved the plan. Execute the todos in order. Update the todo list as you finish each item.")
+}
+
+func formatTodos(items []tools.Todo) string {
+	var b strings.Builder
+	for _, item := range items {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintf(&b, "[%s] %s (%s)", item.ID, item.Content, item.Status)
+	}
+	return b.String()
 }
 
 // ask is the agent's AskFunc. It emits an approval event and waits for the
