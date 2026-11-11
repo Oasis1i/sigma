@@ -31,11 +31,21 @@ type ToolSpec struct {
 	Parameters  map[string]any
 }
 
+// Usage is the token accounting from one completion, when the server sends it.
+// Zero means the server did not report usage. Sigma does not estimate here;
+// a missing count stays missing so the status bar can say so.
+type Usage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
+
 // Response is the completed assistant turn. Content is the full text even
 // when it was also delivered through onDelta.
 type Response struct {
 	Content   string
 	ToolCalls []ToolCall
+	Usage     Usage
 }
 
 // Client completes one chat turn. onDelta is called for each piece of

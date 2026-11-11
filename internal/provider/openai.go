@@ -81,6 +81,11 @@ func (c *OpenAI) Complete(ctx context.Context, messages []Message, tools []ToolS
 		payload["tools"] = toAPITools(tools)
 		payload["tool_choice"] = "auto"
 	}
+	// Ask for a usage object on the final stream chunk. Servers that do not
+	// know the field ignore it; servers that reject unknown fields are rare
+	// among OpenAI-compatible APIs. The status bar shows the numbers only
+	// when they actually arrive.
+	payload["stream_options"] = map[string]any{"include_usage": true}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return Response{}, fmt.Errorf("encode request: %w", err)
@@ -203,6 +208,12 @@ type toolAcc struct {
 	args strings.Builder
 }
 
+type usagePayload struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 type streamChunk struct {
 	Choices []struct {
 		Delta struct {
@@ -210,6 +221,8 @@ type streamChunk struct {
 			ToolCalls []streamToolCall `json:"tool_calls"`
 		} `json:"delta"`
 	} `json:"choices"`
+	// Usage is often sent in a chunk whose choices array is empty.
+	Usage *usagePayload   `json:"usage"`
 	Error json.RawMessage `json:"error"`
 }
 
@@ -228,6 +241,7 @@ func parseSSE(r io.Reader, onDelta func(string)) (Response, error) {
 	var content strings.Builder
 	acc := map[int]*toolAcc{}
 	var order []int
+	var usage Usage
 	for sc.Scan() {
 		line := sc.Text()
 		if line == "" || strings.HasPrefix(line, ":") {
@@ -246,6 +260,13 @@ func parseSSE(r io.Reader, onDelta func(string)) (Response, error) {
 		}
 		if msg := rawError(chunk.Error); msg != "" {
 			return Response{}, fmt.Errorf("provider: %s", msg)
+		}
+		if chunk.Usage != nil {
+			usage = Usage{
+				PromptTokens:     chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens,
+				TotalTokens:      chunk.Usage.TotalTokens,
+			}
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -278,7 +299,7 @@ func parseSSE(r io.Reader, onDelta func(string)) (Response, error) {
 	if err := sc.Err(); err != nil {
 		return Response{}, fmt.Errorf("read stream: %w", err)
 	}
-	return Response{Content: content.String(), ToolCalls: finishCalls(acc, order)}, nil
+	return Response{Content: content.String(), ToolCalls: finishCalls(acc, order), Usage: usage}, nil
 }
 
 type jsonCompletion struct {
@@ -294,6 +315,7 @@ type jsonCompletion struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
+	Usage *usagePayload   `json:"usage"`
 	Error json.RawMessage `json:"error"`
 }
 
@@ -331,7 +353,15 @@ func parseJSONCompletion(body []byte, onDelta func(string)) (Response, error) {
 		}
 		calls = append(calls, ToolCall{ID: id, Name: tc.Function.Name, Arguments: args})
 	}
-	return Response{Content: msg.Content, ToolCalls: calls}, nil
+	resp := Response{Content: msg.Content, ToolCalls: calls}
+	if parsed.Usage != nil {
+		resp.Usage = Usage{
+			PromptTokens:     parsed.Usage.PromptTokens,
+			CompletionTokens: parsed.Usage.CompletionTokens,
+			TotalTokens:      parsed.Usage.TotalTokens,
+		}
+	}
+	return resp, nil
 }
 
 func finishCalls(acc map[int]*toolAcc, order []int) []ToolCall {

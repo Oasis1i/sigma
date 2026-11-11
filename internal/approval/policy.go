@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // Action is the outcome of a rule or a decision.
@@ -48,8 +49,14 @@ type Decision struct {
 	Reason string
 }
 
-// Policy evaluates rules for one session. It is not safe for concurrent use.
+// Policy evaluates rules for one session.
+//
+// Decide, SetMode, and the session-grant methods take a mutex. The turn
+// goroutine calls Decide while a UI goroutine may change the mode, and the
+// two must not observe a half-updated grant map. The mutex is not held across
+// the approval prompt; that wait lives in the engine.
 type Policy struct {
+	mu    sync.Mutex
 	Mode  Mode
 	Rules []Rule
 	// always remembers tools the user accepted with "always" for this session.
@@ -81,6 +88,8 @@ func New(mode string, rules []Rule) (*Policy, error) {
 
 // SetMode changes the default used when no rule matches.
 func (p *Policy) SetMode(mode string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	switch Mode(mode) {
 	case ModePlan, ModeAsk, ModeAuto:
 		p.Mode = Mode(mode)
@@ -90,19 +99,38 @@ func (p *Policy) SetMode(mode string) error {
 	}
 }
 
+// Current is the mode, safe to call while a turn is running.
+func (p *Policy) Current() Mode {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.Mode
+}
+
 // RememberAlways lets this tool skip the default ask prompt for the rest of
 // the session. Deny rules, plan mode, and explicit ask rules still apply.
 func (p *Policy) RememberAlways(tool string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.always == nil {
 		p.always = map[string]bool{}
 	}
 	p.always[tool] = true
 }
 
+// ResetSessionGrants drops "always" answers. A new or resumed session starts
+// from the log, not from whatever the previous session remembered.
+func (p *Policy) ResetSessionGrants() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.always = map[string]bool{}
+}
+
 // Decide returns the action for one call. readOnly comes from the tool
 // (read_file, list_dir, grep). The argument is the command or the path, not
 // the raw JSON.
 func (p *Policy) Decide(tool, arg string, readOnly bool) Decision {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	var deny, ask, allow *Rule
 	for i := range p.Rules {
 		r := &p.Rules[i]

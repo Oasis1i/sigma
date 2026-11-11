@@ -1,9 +1,12 @@
 // Command sigma is a small coding agent. It loads a config, talks to an
 // OpenAI-compatible model, and runs tools in the workspace after approval.
+//
+// The interactive default is the TUI when stdout is a terminal. --plain
+// selects the line REPL. Both, and the -p one-shot path, talk to the same
+// engine: they send commands and read events. The engine never reads stdin.
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -12,26 +15,30 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/Oasis1i/sigma/internal/agent"
 	"github.com/Oasis1i/sigma/internal/approval"
 	"github.com/Oasis1i/sigma/internal/config"
+	"github.com/Oasis1i/sigma/internal/engine"
 	"github.com/Oasis1i/sigma/internal/prompt"
 	"github.com/Oasis1i/sigma/internal/provider"
 	"github.com/Oasis1i/sigma/internal/sandbox"
 	"github.com/Oasis1i/sigma/internal/session"
 	"github.com/Oasis1i/sigma/internal/tools"
+	"github.com/Oasis1i/sigma/internal/tui"
+	"golang.org/x/term"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 const usageText = `sigma is a minimal coding agent.
 
 Usage:
-  sigma                         interactive REPL
+  sigma                         TUI when stdout is a terminal, otherwise the plain REPL
+  sigma tui                     Bubble Tea TUI
+  sigma --plain                 line REPL, even on a terminal
   sigma -p "task"               run one task and exit
   sigma --resume <id>           resume a session (id or unique prefix)
   sigma --continue              resume the most recent session
@@ -65,6 +72,19 @@ func main() {
 }
 
 func run(args []string) error {
+	cmd, args := splitCommand(args)
+	switch cmd {
+	case "version":
+		fmt.Println("sigma", version)
+		return nil
+	case "help":
+		args = append([]string{"-h"}, args...)
+		cmd = ""
+	case "", "tui":
+	default:
+		return fmt.Errorf("unknown command %q (try sigma --help)", cmd)
+	}
+
 	fs := flag.NewFlagSet("sigma", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.Usage = func() {
@@ -86,6 +106,7 @@ func run(args []string) error {
 		resumeID     string
 		continueSess bool
 		showVersion  bool
+		plain        bool
 	)
 	fs.StringVar(&promptStr, "p", "", "one-shot task; sigma exits when the model finishes")
 	fs.StringVar(&mode, "mode", "", "approval mode: plan, ask, or auto")
@@ -98,6 +119,7 @@ func run(args []string) error {
 	fs.StringVar(&resumeID, "resume", "", "resume a session by id or unique prefix")
 	fs.BoolVar(&continueSess, "continue", false, "resume the most recent session")
 	fs.BoolVar(&showVersion, "version", false, "print the version and exit")
+	fs.BoolVar(&plain, "plain", false, "line REPL instead of the TUI")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -114,6 +136,12 @@ func run(args []string) error {
 	}
 	if continueSess && resumeID != "" {
 		return fmt.Errorf("use either --continue or --resume, not both")
+	}
+	if cmd == "tui" && plain {
+		return fmt.Errorf("tui and --plain cannot be combined")
+	}
+	if cmd == "tui" && strings.TrimSpace(promptStr) != "" {
+		return fmt.Errorf("-p cannot be combined with tui")
 	}
 
 	ov := config.Overrides{ConfigPath: configPath, Workspace: workspace}
@@ -171,75 +199,97 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer sess.Close()
 
 	var messages []provider.Message
 	if resumed {
 		messages, err = sess.Messages()
 		if err != nil {
+			sess.Close()
 			return err
 		}
 		remembered, err := sess.RememberedTools()
 		if err != nil {
+			sess.Close()
 			return err
 		}
 		for _, tool := range remembered {
 			policy.RememberAlways(tool)
 		}
-		fmt.Fprintf(os.Stderr, "sigma: resumed %s (%d messages)\n", sess.ID, len(messages))
 	}
 	if len(messages) == 0 {
 		sections, err := prompt.LoadAgents(cfg.Workspace)
 		if err != nil {
+			sess.Close()
 			return err
 		}
 		sys := prompt.Build(cfg.Workspace, cfg.Approval, sections)
 		messages = []provider.Message{{Role: "system", Content: sys}}
 		if err := sess.AppendMessage(messages[0]); err != nil {
+			sess.Close()
 			return err
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "sigma: %s @ %s\n", cfg.Model, cfg.BaseURL)
-	if !resumed {
-		fmt.Fprintf(os.Stderr, "sigma: session %s\n", sess.ID)
-	}
-	fmt.Fprintf(os.Stderr, "sigma: mode %s, workspace %s\n", policy.Mode, cfg.Workspace)
-
-	reg := tools.NewRegistry(&tools.Env{
-		Workspace:   cfg.Workspace,
-		Runner:      &sandbox.Local{Dir: cfg.Workspace},
-		BashTimeout: time.Duration(cfg.BashTimeoutSec) * time.Second,
-	})
-	in := bufio.NewReader(os.Stdin)
-	ag := &agent.Agent{
-		Client:   provider.NewOpenAI(cfg.BaseURL, cfg.APIKey, cfg.Model, nil),
-		Registry: reg,
+	eng := engine.New(&agent.Agent{
+		Client: provider.NewOpenAI(cfg.BaseURL, cfg.APIKey, cfg.Model, nil),
+		Registry: tools.NewRegistry(&tools.Env{
+			Workspace:   cfg.Workspace,
+			Runner:      &sandbox.Local{Dir: cfg.Workspace},
+			BashTimeout: time.Duration(cfg.BashTimeoutSec) * time.Second,
+		}),
 		Policy:   policy,
 		Session:  sess,
 		Messages: messages,
 		MaxSteps: cfg.MaxSteps,
-		Ask:      makeAsk(in),
-		Out:      os.Stdout,
-		Err:      os.Stderr,
-	}
+	}, engine.Options{
+		SessionDir: dir,
+		Model:      cfg.Model,
+		BaseURL:    cfg.BaseURL,
+		Workspace:  cfg.Workspace,
+	})
+	defer eng.Close()
 
-	signals := newSigLoop()
-	if strings.TrimSpace(promptStr) != "" {
-		return ag.RunTurn(signals.arm(), promptStr)
+	useTUI := cmd == "tui" || (cmd == "" && !plain && strings.TrimSpace(promptStr) == "" && term.IsTerminal(int(os.Stdout.Fd())))
+	if useTUI && !term.IsTerminal(int(os.Stdout.Fd())) {
+		return fmt.Errorf("the TUI needs a terminal; use --plain otherwise")
 	}
-	return repl(ag, policy, in, signals)
+	if !useTUI {
+		fmt.Fprintf(os.Stderr, "sigma: %s @ %s\n", cfg.Model, cfg.BaseURL)
+		if resumed {
+			fmt.Fprintf(os.Stderr, "sigma: resumed %s (%d messages)\n", sess.ID, len(messages))
+		} else {
+			fmt.Fprintf(os.Stderr, "sigma: session %s\n", sess.ID)
+		}
+		fmt.Fprintf(os.Stderr, "sigma: mode %s, workspace %s\n", policy.Current(), cfg.Workspace)
+		return runPlain(eng, promptStr, newSigLoop(eng))
+	}
+	return tui.Run(eng, eng.Events(), version)
+}
+
+// splitCommand pulls a leading subcommand off the args. Flags stay in place
+// so `sigma --plain` and `sigma tui --mode ask` both parse.
+func splitCommand(args []string) (string, []string) {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return "", args
+	}
+	switch args[0] {
+	case "tui", "help", "version":
+		return args[0], args[1:]
+	default:
+		return args[0], args[1:]
+	}
 }
 
 // sigLoop cancels the current turn on Ctrl-C. A second Ctrl-C exits.
+// It is installed for the plain REPL only. The TUI is in raw mode, so
+// ctrl+c arrives as a key and the model handles it.
 type sigLoop struct {
-	mu     sync.Mutex
-	cancel context.CancelFunc
-	hits   atomic.Int32
+	hits atomic.Int32
+	eng  *engine.Engine
 }
 
-func newSigLoop() *sigLoop {
-	s := &sigLoop{}
+func newSigLoop(eng *engine.Engine) *sigLoop {
+	s := &sigLoop{eng: eng}
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt)
 	go func() {
@@ -249,55 +299,14 @@ func newSigLoop() *sigLoop {
 				os.Exit(130)
 			}
 			fmt.Fprintln(os.Stderr, "\nsigma: interrupting (ctrl-c again to exit)")
-			s.stop()
+			eng.Cancel()
 		}
 	}()
 	return s
 }
 
-func (s *sigLoop) arm() context.Context {
-	s.hits.Store(0)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, cancel := context.WithCancel(context.Background())
-	s.cancel = cancel
-	return ctx
-}
-
-func (s *sigLoop) stop() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.cancel != nil {
-		s.cancel()
+func (s *sigLoop) beginTurn() {
+	if s != nil {
+		s.hits.Store(0)
 	}
-}
-
-func makeAsk(in *bufio.Reader) agent.AskFunc {
-	return func(toolName, arg string) (bool, bool, error) {
-		if !isTerminal(int(os.Stdin.Fd())) {
-			fmt.Fprintf(os.Stderr, "sigma: denied %s (ask mode needs a terminal; pass --mode auto to run unattended)\n", toolName)
-			return false, false, nil
-		}
-		fmt.Fprintf(os.Stderr, "\nAllow %s?\n  %s\n[y]es / [n]o / [a]lways > ", toolName, clip(arg, 200))
-		line, err := in.ReadString('\n')
-		if err != nil {
-			return false, false, err
-		}
-		switch strings.ToLower(strings.TrimSpace(line)) {
-		case "y", "yes":
-			return true, false, nil
-		case "a", "always":
-			return true, true, nil
-		default:
-			return false, false, nil
-		}
-	}
-}
-
-func clip(s string, n int) string {
-	s = strings.Join(strings.Fields(strings.ReplaceAll(s, "\n", " ")), " ")
-	if len(s) > n {
-		return s[:n] + "..."
-	}
-	return s
 }

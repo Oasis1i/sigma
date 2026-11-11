@@ -1,0 +1,435 @@
+package engine
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
+
+	"github.com/Oasis1i/sigma/internal/agent"
+	"github.com/Oasis1i/sigma/internal/prompt"
+	"github.com/Oasis1i/sigma/internal/provider"
+	"github.com/Oasis1i/sigma/internal/session"
+)
+
+// Options is the identity of a run. The engine needs it to open another
+// session for /clear and /resume without asking the UI to rebuild the agent.
+type Options struct {
+	SessionDir string
+	Model      string
+	BaseURL    string
+	Workspace  string
+}
+
+// Engine owns one agent and the goroutines around it.
+//
+// Two goroutines matter. The loop goroutine reads commands. A turn goroutine
+// runs only while the model is working, and it is the only goroutine that
+// calls RunTurn. Approval is the bridge: the turn blocks in ask, the loop
+// delivers the UI's decision on a separate channel. If approval were just
+// another read of the command channel from inside the turn, the loop would
+// be stuck inside the turn and could not observe cancel.
+type Engine struct {
+	ag        *agent.Agent
+	dir       string
+	model     string
+	baseURL   string
+	workspace string
+
+	events   chan Event
+	cmds     chan Command
+	decision chan decision
+
+	root       context.Context
+	rootCancel context.CancelFunc
+
+	mu         sync.Mutex
+	busy       bool
+	turnCancel context.CancelFunc
+	waiting    string
+
+	apr atomic.Uint64
+
+	promptTokens     int
+	completionTokens int
+}
+
+type decision struct {
+	allow  bool
+	always bool
+}
+
+// New starts the command loop. It sets the agent's Ask and Hooks; a UI
+// should not also set those. Close stops the loop and closes the session.
+func New(ag *agent.Agent, opt Options) *Engine {
+	ctx, cancel := context.WithCancel(context.Background())
+	e := &Engine{
+		ag:         ag,
+		dir:        opt.SessionDir,
+		model:      opt.Model,
+		baseURL:    opt.BaseURL,
+		workspace:  opt.Workspace,
+		events:     make(chan Event, 128),
+		cmds:       make(chan Command, 32),
+		decision:   make(chan decision, 1),
+		root:       ctx,
+		rootCancel: cancel,
+	}
+	ag.Hooks = &agent.Hooks{
+		TextDelta: func(text string) {
+			e.emit(Event{Kind: KindTextDelta, Text: text})
+		},
+		Step: func(step, max int) {
+			e.emit(Event{Kind: KindStep, Step: step, MaxSteps: max})
+		},
+		ToolStart: func(ev agent.ToolEvent) { e.emit(e.toolEvent(KindToolStart, ev)) },
+		ToolEnd:   func(ev agent.ToolEvent) { e.emit(e.toolEvent(KindToolEnd, ev)) },
+		Notice: func(text string) {
+			e.emit(Event{Kind: KindNotice, Text: text})
+		},
+		Usage: func(prompt, completion, total int) {
+			e.mu.Lock()
+			e.promptTokens += prompt
+			e.completionTokens += completion
+			e.mu.Unlock()
+			e.emit(Event{
+				Kind:             KindUsage,
+				PromptTokens:     prompt,
+				CompletionTokens: completion,
+				TotalTokens:      total,
+			})
+		},
+	}
+	ag.Ask = e.ask
+	go e.loop()
+	return e
+}
+
+func (e *Engine) toolEvent(kind Kind, ev agent.ToolEvent) Event {
+	return Event{
+		Kind:    kind,
+		CallID:  ev.ID,
+		Tool:    ev.Name,
+		Args:    ev.Args,
+		Preview: ev.Preview,
+		Output:  ev.Output,
+		Diff:    ev.Diff,
+		Failed:  ev.Failed,
+	}
+}
+
+// Events is the stream. It is not closed. Read until KindDone for one turn,
+// and stop when Close is called; further emits are dropped.
+func (e *Engine) Events() <-chan Event { return e.events }
+
+// Submit hands a command to the loop. It does not block the UI for long:
+// the buffer covers a message plus the approval and cancel that can arrive
+// while a turn is in flight. After Close, the command is discarded.
+func (e *Engine) Submit(cmd Command) {
+	select {
+	case e.cmds <- cmd:
+	case <-e.root.Done():
+	}
+}
+
+// Cancel interrupts the running turn, if there is one.
+func (e *Engine) Cancel() {
+	e.Submit(Command{Kind: CmdCancel})
+}
+
+// Close stops the loop, cancels a running turn, and closes the session log.
+func (e *Engine) Close() {
+	e.rootCancel()
+	if e.ag != nil && e.ag.Session != nil {
+		_ = e.ag.Session.Close()
+	}
+}
+
+// Busy reports whether a turn is running. Slash commands that swap the
+// session refuse to run while this is true, because they replace Messages
+// and the turn goroutine is appending to that slice.
+func (e *Engine) Busy() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.busy
+}
+
+// Mode is the current approval mode.
+func (e *Engine) Mode() string {
+	if e.ag == nil || e.ag.Policy == nil {
+		return ""
+	}
+	return string(e.ag.Policy.Current())
+}
+
+// ModelName is the model from configuration, for the status bar.
+func (e *Engine) ModelName() string { return e.model }
+
+// Workspace is the absolute workspace path.
+func (e *Engine) Workspace() string { return e.workspace }
+
+// SessionID is the open log's id, or empty when there is no session.
+func (e *Engine) SessionID() string {
+	if e.ag == nil || e.ag.Session == nil {
+		return ""
+	}
+	return e.ag.Session.ID
+}
+
+// Usage is the sum of token counts reported since this process opened the
+// session. It is not stored in the log. A server that never sends usage
+// leaves both numbers at zero.
+func (e *Engine) Usage() (prompt, completion int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.promptTokens, e.completionTokens
+}
+
+// Messages returns a copy of the conversation. Call it when no turn is
+// running (after /resume or /clear). The copy's backing array is new; the
+// message contents are shared, and the loop does not mutate them in place.
+func (e *Engine) Messages() []provider.Message {
+	if e.ag == nil {
+		return nil
+	}
+	out := make([]provider.Message, len(e.ag.Messages))
+	copy(out, e.ag.Messages)
+	return out
+}
+
+// SetMode changes the policy and tells the model, so the next completion
+// sees the new mode. It waits until the current turn finishes: Note appends
+// to Messages, which the turn also appends to.
+func (e *Engine) SetMode(mode string) error {
+	if e.Busy() {
+		return fmt.Errorf("wait for the current turn to finish before changing mode")
+	}
+	if e.ag == nil || e.ag.Policy == nil {
+		return fmt.Errorf("no approval policy")
+	}
+	if err := e.ag.Policy.SetMode(mode); err != nil {
+		return err
+	}
+	return e.ag.Note("Approval mode is now " + mode + ".")
+}
+
+// ListSessions reads the session directory, newest first.
+func (e *Engine) ListSessions() ([]session.Summary, error) {
+	if e.dir == "" {
+		return nil, fmt.Errorf("session directory is not set")
+	}
+	return session.List(e.dir)
+}
+
+// Clear starts a new session and drops the in-memory conversation back to
+// the system prompt. The previous log stays on disk and can be resumed.
+func (e *Engine) Clear() (string, error) {
+	if e.Busy() {
+		return "", fmt.Errorf("wait for the current turn to finish")
+	}
+	if e.dir == "" {
+		return "", fmt.Errorf("session directory is not set")
+	}
+	sess, err := session.Create(e.dir, map[string]string{
+		"model":     e.model,
+		"base_url":  e.baseURL,
+		"mode":      e.Mode(),
+		"workspace": e.workspace,
+	})
+	if err != nil {
+		return "", err
+	}
+	sys, err := e.systemPrompt()
+	if err != nil {
+		_ = sess.Close()
+		return "", err
+	}
+	msg := provider.Message{Role: "system", Content: sys}
+	if err := sess.AppendMessage(msg); err != nil {
+		_ = sess.Close()
+		return "", err
+	}
+	e.swapSession(sess, []provider.Message{msg})
+	return sess.ID, nil
+}
+
+// Resume opens a previous log by id or unique prefix and rebuilds the
+// conversation from it. The approval mode stays as the process started it;
+// "always" grants are restored from the log.
+func (e *Engine) Resume(id string) error {
+	if e.Busy() {
+		return fmt.Errorf("wait for the current turn to finish")
+	}
+	if e.dir == "" {
+		return fmt.Errorf("session directory is not set")
+	}
+	sess, err := session.Open(e.dir, id)
+	if err != nil {
+		return err
+	}
+	if e.ag.Session != nil && sess.Path == e.ag.Session.Path {
+		_ = sess.Close()
+		return nil
+	}
+	messages, err := sess.Messages()
+	if err != nil {
+		_ = sess.Close()
+		return err
+	}
+	remembered, err := sess.RememberedTools()
+	if err != nil {
+		_ = sess.Close()
+		return err
+	}
+	if len(messages) == 0 {
+		sys, err := e.systemPrompt()
+		if err != nil {
+			_ = sess.Close()
+			return err
+		}
+		messages = []provider.Message{{Role: "system", Content: sys}}
+		if err := sess.AppendMessage(messages[0]); err != nil {
+			_ = sess.Close()
+			return err
+		}
+	}
+	e.swapSession(sess, messages)
+	if e.ag.Policy != nil {
+		e.ag.Policy.ResetSessionGrants()
+		for _, tool := range remembered {
+			e.ag.Policy.RememberAlways(tool)
+		}
+	}
+	return nil
+}
+
+func (e *Engine) swapSession(sess *session.Session, messages []provider.Message) {
+	if e.ag.Session != nil {
+		_ = e.ag.Session.Close()
+	}
+	e.ag.Session = sess
+	e.ag.Messages = messages
+	e.mu.Lock()
+	e.promptTokens = 0
+	e.completionTokens = 0
+	e.mu.Unlock()
+}
+
+func (e *Engine) systemPrompt() (string, error) {
+	sections, err := prompt.LoadAgents(e.workspace)
+	if err != nil {
+		return "", err
+	}
+	return prompt.Build(e.workspace, e.Mode(), sections), nil
+}
+
+func (e *Engine) loop() {
+	for {
+		select {
+		case <-e.root.Done():
+			return
+		case cmd := <-e.cmds:
+			e.handle(cmd)
+		}
+	}
+}
+
+func (e *Engine) handle(cmd Command) {
+	switch cmd.Kind {
+	case CmdMessage:
+		e.startTurn(cmd.Text)
+	case CmdCancel:
+		e.mu.Lock()
+		cancel := e.turnCancel
+		e.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	case CmdApproval:
+		e.deliver(cmd)
+	default:
+		e.emit(Event{Kind: KindError, Text: "unknown command"})
+	}
+}
+
+func (e *Engine) startTurn(text string) {
+	e.mu.Lock()
+	if e.busy {
+		e.mu.Unlock()
+		e.emit(Event{Kind: KindError, Text: "a turn is already running"})
+		return
+	}
+	e.busy = true
+	ctx, cancel := context.WithCancel(e.root)
+	e.turnCancel = cancel
+	e.mu.Unlock()
+
+	go func() {
+		err := e.ag.RunTurn(ctx, text)
+		e.mu.Lock()
+		e.busy = false
+		e.turnCancel = nil
+		e.mu.Unlock()
+		canceled := errors.Is(err, context.Canceled)
+		if err != nil && !canceled {
+			e.emit(Event{Kind: KindError, Text: err.Error()})
+		}
+		e.emit(Event{Kind: KindDone, Canceled: canceled})
+	}()
+}
+
+// ask is the agent's AskFunc. It emits an approval event and waits for the
+// matching command, or for the turn to be canceled. The decision channel is
+// buffered so a UI that answers before this goroutine reaches select does
+// not deadlock.
+func (e *Engine) ask(ctx context.Context, tool, arg string) (bool, bool, error) {
+	id := fmt.Sprintf("apr_%d", e.apr.Add(1))
+	select {
+	case <-e.decision:
+	default:
+	}
+	e.mu.Lock()
+	e.waiting = id
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		if e.waiting == id {
+			e.waiting = ""
+		}
+		e.mu.Unlock()
+	}()
+
+	e.emit(Event{Kind: KindApproval, ApprovalID: id, Tool: tool, Args: arg})
+	select {
+	case <-ctx.Done():
+		return false, false, ctx.Err()
+	case <-e.root.Done():
+		return false, false, e.root.Err()
+	case d := <-e.decision:
+		return d.allow, d.always, nil
+	}
+}
+
+func (e *Engine) deliver(cmd Command) {
+	e.mu.Lock()
+	waiting := e.waiting
+	e.mu.Unlock()
+	if waiting == "" {
+		return
+	}
+	if cmd.ApprovalID != "" && cmd.ApprovalID != waiting {
+		return
+	}
+	select {
+	case e.decision <- decision{allow: cmd.Allow, always: cmd.Always}:
+	default:
+	}
+}
+
+func (e *Engine) emit(ev Event) {
+	select {
+	case <-e.root.Done():
+	case e.events <- ev:
+	}
+}
