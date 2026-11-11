@@ -26,7 +26,14 @@ const (
 	DefaultExploreTokens    = 8000
 )
 
-// Rule is one approval pattern from a config file.
+// MCPServer is one external tool server. Set command for stdio, or url for
+// streamable HTTP. Not both.
+type MCPServer struct {
+	Name    string   `toml:"name"`
+	Command []string `toml:"command"`
+	URL     string   `toml:"url"`
+	Env     []string `toml:"env"`
+}
 type Rule struct {
 	Action  string `toml:"action"`
 	Pattern string `toml:"pattern"`
@@ -36,19 +43,20 @@ type Rule struct {
 // compact_threshold: 0 is a real value (compaction off) when the key is
 // present. apply uses the decode metadata to tell those apart.
 type file struct {
-	BaseURL          string   `toml:"base_url"`
-	Model            string   `toml:"model"`
-	APIKey           string   `toml:"api_key"`
-	MaxSteps         int      `toml:"max_steps"`
-	BashTimeout      int      `toml:"bash_timeout_seconds"`
-	Approval         string   `toml:"approval_mode"`
-	CompactThreshold int      `toml:"compact_threshold"`
-	Sandbox          string   `toml:"sandbox"`
-	DockerImage      string   `toml:"docker_image"`
-	Verify           []string `toml:"verify"`
-	ExploreMaxSteps  int      `toml:"explore_max_steps"`
-	ExploreMaxTokens int      `toml:"explore_max_tokens"`
-	Rules            []Rule   `toml:"rules"`
+	BaseURL          string      `toml:"base_url"`
+	Model            string      `toml:"model"`
+	APIKey           string      `toml:"api_key"`
+	MaxSteps         int         `toml:"max_steps"`
+	BashTimeout      int         `toml:"bash_timeout_seconds"`
+	Approval         string      `toml:"approval_mode"`
+	CompactThreshold int         `toml:"compact_threshold"`
+	Sandbox          string      `toml:"sandbox"`
+	DockerImage      string      `toml:"docker_image"`
+	Verify           []string    `toml:"verify"`
+	ExploreMaxSteps  int         `toml:"explore_max_steps"`
+	ExploreMaxTokens int         `toml:"explore_max_tokens"`
+	MCP              []MCPServer `toml:"mcp"`
+	Rules            []Rule      `toml:"rules"`
 }
 
 // Config is the fully resolved settings for one run.
@@ -71,6 +79,7 @@ type Config struct {
 	DockerImage      string
 	ExploreMaxSteps  int
 	ExploreMaxTokens int
+	MCP              []MCPServer
 }
 
 // Overrides carries CLI flags. A Set field replaces the loaded value even
@@ -227,6 +236,9 @@ func apply(cfg *Config, f file, md toml.MetaData) {
 	if f.ExploreMaxTokens > 0 {
 		cfg.ExploreMaxTokens = f.ExploreMaxTokens
 	}
+	if md.IsDefined("mcp") {
+		cfg.MCP = append(cfg.MCP, f.MCP...)
+	}
 }
 
 func validate(cfg *Config) error {
@@ -280,6 +292,25 @@ func validate(cfg *Config) error {
 		}
 		if strings.TrimSpace(r.Pattern) == "" {
 			return fmt.Errorf("rule action %q has an empty pattern", r.Action)
+		}
+	}
+	seenMCP := map[string]bool{}
+	for _, srv := range cfg.MCP {
+		name := strings.TrimSpace(srv.Name)
+		if name == "" {
+			return fmt.Errorf("mcp server is missing a name")
+		}
+		if strings.Contains(name, "__") || strings.ContainsAny(name, " \t\n") {
+			return fmt.Errorf("mcp server name %q cannot contain spaces or __", name)
+		}
+		if seenMCP[name] {
+			return fmt.Errorf("duplicate mcp server %q", name)
+		}
+		seenMCP[name] = true
+		hasCmd := len(srv.Command) > 0
+		hasURL := strings.TrimSpace(srv.URL) != ""
+		if hasCmd == hasURL {
+			return fmt.Errorf("mcp server %q needs exactly one of command or url", name)
 		}
 	}
 	return nil

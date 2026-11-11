@@ -110,3 +110,16 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 	}
 	return t.Execute(ctx, r.env, args)
 }
+
+// Add registers a tool discovered at startup, such as an MCP tool. A duplicate
+// name replaces the previous spec so a config reload can be expressed later.
+func (r *Registry) Add(t Tool) {
+	if r == nil || t == nil {
+		return
+	}
+	name := t.Spec().Name
+	if _, ok := r.byName[name]; !ok {
+		r.list = append(r.list, t)
+	}
+	r.byName[name] = t
+}

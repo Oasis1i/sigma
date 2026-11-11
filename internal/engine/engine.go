@@ -29,6 +29,8 @@ type Options struct {
 	// Checkpoints is optional. Nil disables snapshots, including outside a
 	// git repository where the store reports itself unavailable.
 	Checkpoints *checkpoint.Store
+	// MCPStatus is the text for /mcp. Nil means no servers were configured.
+	MCPStatus func() string
 }
 
 // Engine owns one agent and the goroutines around it.
@@ -47,6 +49,7 @@ type Engine struct {
 	workspace string
 	verify    []string
 	cp        *checkpoint.Store
+	mcpStatus func() string
 	// execMode is the approval mode to restore after the user approves a plan.
 	// Entering plan mode saves the mode that was active. Starting already in
 	// plan mode leaves this as ask.
@@ -87,6 +90,7 @@ func New(ag *agent.Agent, opt Options) *Engine {
 		workspace:  opt.Workspace,
 		verify:     append([]string(nil), opt.Verify...),
 		cp:         opt.Checkpoints,
+		mcpStatus:  opt.MCPStatus,
 		execMode:   "ask",
 		events:     make(chan Event, 128),
 		cmds:       make(chan Command, 32),

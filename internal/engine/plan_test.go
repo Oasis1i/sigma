@@ -77,3 +77,16 @@ func TestPlanRejectDoesNotExecute(t *testing.T) {
 		t.Fatalf("kinds %s", joinKinds(evs))
 	}
 }
+
+func TestMCPSlash(t *testing.T) {
+	eng, _ := newEngine(t, "ask", &provider.Scripted{})
+	empty, err := eng.ApplySlash("/mcp")
+	if err != nil || !strings.Contains(empty.Notice, "no MCP") {
+		t.Fatalf("empty %+v %v", empty, err)
+	}
+	eng.mcpStatus = func() string { return "MCP servers:\n  echo  stdio  connected\n    tools: echo" }
+	got, err := eng.ApplySlash("/mcp")
+	if err != nil || !strings.Contains(got.Notice, "mcp__") && !strings.Contains(got.Notice, "echo") {
+		t.Fatalf("%+v %v", got, err)
+	}
+}

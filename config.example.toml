@@ -24,6 +24,16 @@ sandbox = "local"
 # explore_max_steps = 8
 # explore_max_tokens = 8000
 
+# MCP servers. command is a stdio server. url is streamable HTTP.
+# Tools are exposed as mcp__<name>__<tool> and follow the approval rules.
+# [[mcp]]
+# name = "echo"
+# command = ["python", "echo_server.py"]
+
+# [[mcp]]
+# name = "remote"
+# url = "http://127.0.0.1:8080/mcp"
+
 # Commands run after a successful edit_file or write_file. A non-zero exit
 # is shown to the model so it can fix the failure. Leave this unset to skip.
 # verify = ["go vet ./...", "go test ./..."]

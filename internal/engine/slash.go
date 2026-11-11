@@ -16,6 +16,7 @@ const SlashHelp = `Commands:
   /resume <id>          resume a session (id or unique prefix)
   /clear                start a new session
   /undo                 restore the previous git checkpoint
+  /mcp                  list MCP servers and tools
   /exit, /quit          leave
 `
 
@@ -69,6 +70,11 @@ func (e *Engine) ApplySlash(line string) (SlashEffect, error) {
 		return SlashEffect{Notice: "new session " + id, Rebuild: true}, nil
 	case "/undo":
 		return e.undo()
+	case "/mcp":
+		if e.mcpStatus == nil {
+			return SlashEffect{Notice: "no MCP servers configured"}, nil
+		}
+		return SlashEffect{Notice: e.mcpStatus()}, nil
 	case "/resume":
 		if len(fields) != 2 {
 			return SlashEffect{}, fmt.Errorf("usage: /resume <id>")
