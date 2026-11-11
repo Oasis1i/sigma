@@ -17,9 +17,11 @@ import (
 )
 
 const (
-	DefaultMaxSteps       = 50
-	DefaultBashTimeoutSec = 120
-	DefaultMode           = "ask"
+	DefaultMaxSteps         = 50
+	DefaultBashTimeoutSec   = 120
+	DefaultMode             = "ask"
+	DefaultCompactThreshold = 80000
+	DefaultSandbox          = "local"
 )
 
 // Rule is one approval pattern from a config file.
@@ -28,15 +30,21 @@ type Rule struct {
 	Pattern string `toml:"pattern"`
 }
 
-// file is the on-disk shape. Empty fields mean "not set".
+// file is the on-disk shape. Empty scalar fields mean "not set", except
+// compact_threshold: 0 is a real value (compaction off) when the key is
+// present. apply uses the decode metadata to tell those apart.
 type file struct {
-	BaseURL     string `toml:"base_url"`
-	Model       string `toml:"model"`
-	APIKey      string `toml:"api_key"`
-	MaxSteps    int    `toml:"max_steps"`
-	BashTimeout int    `toml:"bash_timeout_seconds"`
-	Approval    string `toml:"approval_mode"`
-	Rules       []Rule `toml:"rules"`
+	BaseURL          string   `toml:"base_url"`
+	Model            string   `toml:"model"`
+	APIKey           string   `toml:"api_key"`
+	MaxSteps         int      `toml:"max_steps"`
+	BashTimeout      int      `toml:"bash_timeout_seconds"`
+	Approval         string   `toml:"approval_mode"`
+	CompactThreshold int      `toml:"compact_threshold"`
+	Sandbox          string   `toml:"sandbox"`
+	DockerImage      string   `toml:"docker_image"`
+	Verify           []string `toml:"verify"`
+	Rules            []Rule   `toml:"rules"`
 }
 
 // Config is the fully resolved settings for one run.
@@ -49,6 +57,14 @@ type Config struct {
 	Approval       string
 	Rules          []Rule
 	Workspace      string
+	// CompactThreshold is an estimated token count. Above it, older turns are
+	// summarized. 0 disables compaction.
+	CompactThreshold int
+	// Verify commands run after a successful edit_file or write_file.
+	// Failures are given back to the model. Empty disables the feature.
+	Verify      []string
+	Sandbox     string // local or docker
+	DockerImage string
 }
 
 // Overrides carries CLI flags. A Set field replaces the loaded value even
@@ -93,38 +109,40 @@ func Load(ov Overrides) (Config, error) {
 	}
 
 	cfg := Config{
-		MaxSteps:       DefaultMaxSteps,
-		BashTimeoutSec: DefaultBashTimeoutSec,
-		Approval:       DefaultMode,
-		Workspace:      workspace,
+		MaxSteps:         DefaultMaxSteps,
+		BashTimeoutSec:   DefaultBashTimeoutSec,
+		Approval:         DefaultMode,
+		Workspace:        workspace,
+		CompactThreshold: DefaultCompactThreshold,
+		Sandbox:          DefaultSandbox,
 	}
 
 	if ov.ConfigPath != "" {
-		f, found, err := readFile(ov.ConfigPath)
+		f, md, found, err := readFile(ov.ConfigPath)
 		if err != nil {
 			return Config{}, err
 		}
 		if !found {
 			return Config{}, fmt.Errorf("config file not found: %s", ov.ConfigPath)
 		}
-		apply(&cfg, f)
+		apply(&cfg, f, md)
 	} else {
 		if path := userConfigPath(); path != "" {
-			f, found, err := readFile(path)
+			f, md, found, err := readFile(path)
 			if err != nil {
 				return Config{}, err
 			}
 			if found {
-				apply(&cfg, f)
+				apply(&cfg, f, md)
 			}
 		}
 		project := filepath.Join(workspace, ".sigma.toml")
-		f, found, err := readFile(project)
+		f, md, found, err := readFile(project)
 		if err != nil {
 			return Config{}, err
 		}
 		if found {
-			apply(&cfg, f)
+			apply(&cfg, f, md)
 		}
 	}
 
@@ -159,7 +177,7 @@ func Load(ov Overrides) (Config, error) {
 	return cfg, nil
 }
 
-func apply(cfg *Config, f file) {
+func apply(cfg *Config, f file, md toml.MetaData) {
 	if f.BaseURL != "" {
 		cfg.BaseURL = f.BaseURL
 	}
@@ -180,6 +198,20 @@ func apply(cfg *Config, f file) {
 	}
 	if len(f.Rules) > 0 {
 		cfg.Rules = append(cfg.Rules, f.Rules...)
+	}
+	// 0 is meaningful (disable compaction), so absence of the key must not
+	// look like an explicit zero. The same is true for an empty verify list.
+	if md.IsDefined("compact_threshold") {
+		cfg.CompactThreshold = f.CompactThreshold
+	}
+	if md.IsDefined("sandbox") && strings.TrimSpace(f.Sandbox) != "" {
+		cfg.Sandbox = strings.TrimSpace(f.Sandbox)
+	}
+	if md.IsDefined("docker_image") && strings.TrimSpace(f.DockerImage) != "" {
+		cfg.DockerImage = strings.TrimSpace(f.DockerImage)
+	}
+	if md.IsDefined("verify") {
+		cfg.Verify = append(cfg.Verify, f.Verify...)
 	}
 }
 
@@ -207,6 +239,25 @@ func validate(cfg *Config) error {
 	if cfg.BashTimeoutSec <= 0 {
 		return fmt.Errorf("bash_timeout_seconds must be positive")
 	}
+	if cfg.CompactThreshold < 0 {
+		return fmt.Errorf("compact_threshold must be zero or positive")
+	}
+	switch cfg.Sandbox {
+	case "", "local":
+		cfg.Sandbox = "local"
+	case "docker":
+		if strings.TrimSpace(cfg.DockerImage) == "" {
+			return fmt.Errorf("docker_image is required when sandbox = \"docker\"")
+		}
+		cfg.DockerImage = strings.TrimSpace(cfg.DockerImage)
+	default:
+		return fmt.Errorf("unknown sandbox %q (want local or docker)", cfg.Sandbox)
+	}
+	for _, cmd := range cfg.Verify {
+		if strings.TrimSpace(cmd) == "" {
+			return fmt.Errorf("verify contains an empty command")
+		}
+	}
 	for _, r := range cfg.Rules {
 		switch strings.TrimSpace(r.Action) {
 		case "deny", "ask", "allow":
@@ -220,29 +271,32 @@ func validate(cfg *Config) error {
 	return nil
 }
 
-func readFile(path string) (file, bool, error) {
+func readFile(path string) (file, toml.MetaData, bool, error) {
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return file{}, false, nil
+		return file{}, toml.MetaData{}, false, nil
 	}
 	if err != nil {
-		return file{}, false, fmt.Errorf("read %s: %w", path, err)
+		return file{}, toml.MetaData{}, false, fmt.Errorf("read %s: %w", path, err)
 	}
 	var f file
 	md, err := toml.Decode(string(b), &f)
 	if err != nil {
-		return file{}, true, fmt.Errorf("%s: %w", path, err)
+		return file{}, toml.MetaData{}, true, fmt.Errorf("%s: %w", path, err)
 	}
 	if undecoded := md.Undecoded(); len(undecoded) > 0 {
-		return file{}, true, fmt.Errorf("%s: unknown keys: %s", path, undecoded)
+		return file{}, md, true, fmt.Errorf("%s: unknown keys: %s", path, undecoded)
 	}
 	if f.MaxSteps < 0 {
-		return file{}, true, fmt.Errorf("%s: max_steps must be positive", path)
+		return file{}, md, true, fmt.Errorf("%s: max_steps must be positive", path)
 	}
 	if f.BashTimeout < 0 {
-		return file{}, true, fmt.Errorf("%s: bash_timeout_seconds must be positive", path)
+		return file{}, md, true, fmt.Errorf("%s: bash_timeout_seconds must be positive", path)
 	}
-	return f, true, nil
+	if f.CompactThreshold < 0 {
+		return file{}, md, true, fmt.Errorf("%s: compact_threshold must be zero or positive", path)
+	}
+	return f, md, true, nil
 }
 
 func userConfigPath() string {

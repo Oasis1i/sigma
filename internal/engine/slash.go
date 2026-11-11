@@ -15,6 +15,7 @@ const SlashHelp = `Commands:
   /sessions             list saved sessions
   /resume <id>          resume a session (id or unique prefix)
   /clear                start a new session
+  /undo                 restore the previous git checkpoint
   /exit, /quit          leave
 `
 
@@ -66,6 +67,8 @@ func (e *Engine) ApplySlash(line string) (SlashEffect, error) {
 			return SlashEffect{}, err
 		}
 		return SlashEffect{Notice: "new session " + id, Rebuild: true}, nil
+	case "/undo":
+		return e.undo()
 	case "/resume":
 		if len(fields) != 2 {
 			return SlashEffect{}, fmt.Errorf("usage: /resume <id>")

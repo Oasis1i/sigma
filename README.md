@@ -21,7 +21,7 @@ Sigma 是一个用 Go 写的极简编码代理。它通过 OpenAI 兼容接口�
 - `sigma -p "任务"`：执行一次后退出
 - `sigma --resume <id>` / `sigma --continue`：从会话日志恢复
 
-审批模式：`plan` 只允许只读工具；`ask` 在改文件或跑命令前询问（`y` / `n` / `always`）；`auto` 执行规则允许的操作。规则按拒绝、询问、允许三类判断，命中的拒绝优先于允许。会话以 JSONL 追加写入 `~/.local/share/sigma/sessions/`。斜杠命令：`/mode`、`/clear`、`/sessions`、`/resume <id>`、`/help`、`/quit`。
+审批模式：`plan` 只允许只读工具；`ask` 在改文件或跑命令前询问（`y` / `n` / `always`）；`auto` 执行规则允许的操作。规则按拒绝、询问、允许三类判断，命中的拒绝优先于允许。会话以 JSONL 追加写入 `~/.local/share/sigma/sessions/`。斜杠命令包括 `/mode`、`/clear`、`/sessions`、`/resume <id>`、`/undo`、`/help`、`/quit`。`/undo` 把工作区恢复到本轮开始前的隐藏 git 提交（`refs/sigma/...`），不改你的分支和暂存区；不在 git 仓库里时会说明已禁用。`compact_threshold` 过大时会先让模型总结旧对话。`verify` 在成功改文件后跑你配置的命令，失败结果会送回模型。`sandbox = "docker"` 时模型的 bash 在容器里跑，审批规则不变。
 
 ## Install
 
@@ -52,6 +52,18 @@ approval_mode = "ask"   # plan | ask | auto
 max_steps = 50
 bash_timeout_seconds = 120
 
+# 0 disables. Otherwise an estimated token count (about 4 characters each).
+# Above it, older turns are summarized and recent turns are kept.
+compact_threshold = 80000
+
+# local (default) or docker. docker_image is required for docker.
+# The image must include bash. Approval rules do not change.
+sandbox = "local"
+# docker_image = "golang:1.22"
+
+# Run after a successful edit. A failing command is shown to the model.
+# verify = ["go vet ./...", "go test ./..."]
+
 [[rules]]
 action = "deny"
 pattern = "bash:rm -rf *"
@@ -79,6 +91,12 @@ Resolution order for scalar settings, later wins:
 There is no default model and no default base URL. If either is missing, Sigma exits and says where to set it.
 
 Optional instruction files are appended to the system prompt: `~/.config/sigma/AGENTS.md`, then `AGENTS.md` at the git root (and at the workspace, if that is different). Each file is capped at 32KB.
+
+`compact_threshold` defaults to 80000 estimated tokens. Set it to 0 to keep the full transcript. When a turn would exceed it, Sigma asks the model for a summary of the older messages, keeps the system prompt and the most recent messages (without splitting a tool call from its result), and writes a `compaction` event to the session log. Resume rebuilds that shortened view. The earlier lines stay in the file.
+
+`verify` is a list of shell commands. After a successful `edit_file` or `write_file`, Sigma runs them on the local machine and, if one exits non-zero, sends the output back to the model. They are not approval prompts: you wrote them in the config. They always run locally, even when `sandbox = "docker"`, because they are your toolchain rather than a command the model invented.
+
+`sandbox = "docker"` runs the model's `bash` tool in `docker_image`, with the workspace mounted at `/workspace` and the container user set to your uid. The approval policy is unchanged. The image needs `bash`. There is no Docker requirement for the default `local` sandbox.
 
 ## Usage
 
@@ -163,7 +181,7 @@ The status bar shows the model, the approval mode, the step count, token totals 
                         └─────────────────────────────────────────────┘
 ```
 
-The page shows the transcript with a small markdown renderer and token coloring in code fences, tool cards with diffs, an approval dialog, the plan/ask/auto switch, a session list that resumes a JSONL log, the workspace path, and a stop button. Enter sends; Shift+Enter inserts a newline. The same slash commands as the TUI work in the input (`/quit` asks you to close the tab; the process stays up until Ctrl-C in the terminal).
+The page shows the transcript with a small markdown renderer and token coloring in code fences, tool cards with diffs, an approval dialog, the plan/ask/auto switch, a session list that resumes a JSONL log, the workspace path, and a stop button. Enter sends; Shift+Enter inserts a newline. The same slash commands as the TUI work in the input (`/quit` asks you to close the tab; the process stays up until Ctrl-C in the terminal). `/undo` works here too when the workspace is a git repository.
 
 Events arrive as Server-Sent Events (`GET /api/events`). Commands are POSTs (`/api/message`, `/api/approval`, `/api/cancel`, `/api/mode`, `/api/resume`, `/api/clear`). The page itself is `embed.FS` under `internal/gui/assets` (plain HTML, CSS, and JS, no Node toolchain). A later [Wails](https://wails.io) shell can load those same files and call the same routes, or talk to the engine in-process. Wails is not a dependency: it needs cgo, and `go test` stays pure Go.
 
@@ -176,6 +194,7 @@ Events arrive as Server-Sent Events (`GET /api/events`). Commands are POSTs (`/a
 - `/sessions` lists saved sessions, newest first
 - `/resume <id>` loads one (id or unique prefix)
 - `/clear` starts a new session and leaves the old log on disk
+- `/undo` restores the git checkpoint taken before the last turn
 - `/exit` or `/quit` or Ctrl-D leaves
 - Ctrl-C interrupts the current turn; a second Ctrl-C exits
 
@@ -202,7 +221,7 @@ They are not first-match-wins. Sigma collects matches and applies them in this o
 
 "Always" does not override a deny rule or an explicit ask rule. It only stops the default prompt for that tool until the process exits. Resume restores those grants from the log.
 
-Approval is not the sandbox. The policy decides whether a call may run. `internal/sandbox` decides where a bash command runs. Today that is a local process group in the workspace directory. A Docker runner would implement the same `Runner` interface.
+Approval is not the sandbox. The policy decides whether a call may run. `internal/sandbox` decides where a bash command runs. The default is a local process group in the workspace directory. `sandbox = "docker"` uses a container with the same `Runner` interface. File tools still touch the local disk. Verify commands also stay local.
 
 ## Tools
 
@@ -234,7 +253,8 @@ internal/agent       one turn: model, tools, repeat
 internal/provider    OpenAI-compatible streaming client, plus a scripted fake
 internal/tools       the six tools
 internal/approval    deny / ask / allow policy
-internal/sandbox     local process execution
+internal/sandbox     local process, or docker, for bash
+internal/checkpoint  hidden git snapshots and /undo
 internal/session     JSONL log
 internal/config      file, environment, flags
 internal/prompt      system prompt and AGENTS.md
@@ -246,7 +266,11 @@ scripts/run-evals.sh runs those tasks; not used in CI
 
 The provider is a short HTTP client for chat completions, not the generated OpenAI SDK. The request and the SSE stream are the whole protocol a compatible server implements, and the file is small enough to debug when a local model misbehaves. `Client` is the seam tests use: the agent tests run against a scripted provider with no network. The client asks for `stream_options.include_usage`. Token counts show up in the TUI status bar and as a stderr line in plain mode when the server sends them.
 
-The engine is the boundary between that loop and a UI. A turn runs on its own goroutine and reports text, tools, steps, and usage through hooks. The command goroutine is the only one reading user input, as commands. Approval is a command rather than a callback into stdin, so a TUI and a later web UI can answer it without sharing the terminal. Cancel cancels the turn context, which also unblocks an approval wait.
+The engine is the boundary between that loop and a UI. A turn runs on its own goroutine and reports text, tools, steps, and usage through hooks. The command goroutine is the only one reading user input, as commands. Approval is a command rather than a callback into stdin, so a TUI and a web UI can answer it without sharing the terminal. Cancel cancels the turn context, which also unblocks an approval wait.
+
+Before each turn inside a git repository, the engine writes a checkpoint commit under `refs/sigma/<session>/<n>`. The commit is built with `GIT_INDEX_FILE` pointing at a temporary index, then `commit-tree` and `update-ref`. HEAD, the current branch, and the staged diff are not updated. `/undo` checks that commit back out through another temporary index and deletes files the snapshot does not contain, then drops the ref so a second `/undo` steps back again. Outside a git checkout the commands say undo is unavailable and the turn still runs.
+
+Compaction is the same idea as a long chat being folded into a note. The estimate is `len/4`, not a real tokenizer. The summary call does not stream into the transcript. The JSONL file keeps the old messages; a compaction event tells resume to hide them behind the summary.
 
 Edits follow the same idea as Claude Code and OpenCode: the model must quote a unique snippet. A fuzzy match would hide mistakes. When the snippet is missing only because of CRLF versus LF, the error says so. The TUI shows the snippet as a unified diff. That diff is the change the model asked for, including when the edit is rejected.
 
@@ -264,7 +288,7 @@ go vet ./...
 gofmt -l .
 ```
 
-CI runs those three. Coverage is the edit uniqueness rule (including a symlink that points outside the workspace), bash timeout and head/tail truncation, approval ordering, session round-trip and resume, the agent loop against a fake provider (native tools, the bash-fence fallback, plan mode, deny rules, max steps), the engine event stream (text, usage, tool start/finish, approval allow and deny, cancel), TUI update logic (submit, slash commands, approval keys, ctrl+c, folding a tool, rebuilding a resumed transcript), the GUI handlers (token required, foreign Host and Origin rejected, SSE events, denying a write), config merge order, and the HTTP client against a local stream.
+CI runs those three. Coverage includes edits, bash limits, approval order, sessions, the agent loop, the engine event stream, TUI updates, GUI auth and SSE, config merge order, the HTTP client, compaction and its session replay, verify failures fed back to the model, git checkpoint/undo without moving HEAD or the index, and the Docker runner's argument list.
 
 ## Evals
 
@@ -280,13 +304,13 @@ These tasks need a configured model, so they are not part of GitHub Actions.
 
 **v2**
 
-- context compaction for long sessions
-- git checkpoint and `/undo`
-- lint and test feedback after edits
-- a repo map (the Aider idea)
+- context compaction for long sessions (`compact_threshold`)
+- git checkpoint and `/undo` (`refs/sigma/...`, not your branch)
+- lint and test feedback after edits (`verify`)
 - ~~a Bubble Tea TUI~~ done (`sigma` / `sigma tui`)
-- ~~a local web GUI on the same engine~~ done (`sigma gui`; Wails later, not now)
-- Docker as a `sandbox.Runner`
+- ~~a local web GUI~~ done (`sigma gui`; a Wails shell can wrap it later, not in this tree)
+- ~~Docker as a `sandbox.Runner`~~ done (`sandbox = "docker"`)
+- a repo map in the Aider sense. Deferred: the usual tree-sitter bindings need cgo, and this build stays pure Go.
 
 **v3**
 
@@ -297,7 +321,7 @@ These tasks need a configured model, so they are not part of GitHub Actions.
 ## Limitations
 
 - Execution is local and POSIX. Process-group kill is Unix-specific.
-- The conversation is not compacted. A long session will eventually exceed the model's context.
+- The conversation is compacted only when `compact_threshold` is above zero and the rough estimate exceeds it. The estimate is character length divided by four, not the model's tokenizer.
 - "Always" is per tool name for the session, not per command.
 - The `.gitignore` matcher is a subset, and named `read_file` calls can still read ignored files.
 - A fenced bash block with no native tool call is executed, including an example the model did not mean to run. The system prompt warns it.
@@ -305,7 +329,9 @@ These tasks need a configured model, so they are not part of GitHub Actions.
 - The TUI needs a real terminal. Token totals stay empty when the server does not report usage.
 - In the plain REPL, Ctrl-C during the `y/n/always` prompt cancels the turn, but the prompt itself waits for Enter. The TUI and the GUI handle that choice immediately.
 - `sigma gui` is a browser page, not a native window. The token is in the URL, so it is visible to anything that can read the terminal or the browser history on this machine.
-- There is no git checkpoint and no Docker sandbox yet.
+- `/undo` needs git and a checkpoint from a turn in this session. It restores the worktree only. It does not move HEAD or the index, and it does not undo commits you made yourself.
+- Docker is optional and is not used in CI. The container is not a full security boundary: the workspace is mounted read-write, and approval still decides whether bash may run.
+- There is no tree-sitter repo map. That would pull in cgo.
 
 ## License
 

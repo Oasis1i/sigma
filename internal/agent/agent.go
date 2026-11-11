@@ -13,9 +13,11 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/Oasis1i/sigma/internal/approval"
 	"github.com/Oasis1i/sigma/internal/provider"
+	"github.com/Oasis1i/sigma/internal/sandbox"
 	"github.com/Oasis1i/sigma/internal/session"
 	"github.com/Oasis1i/sigma/internal/tools"
 )
@@ -44,6 +46,15 @@ type Agent struct {
 	Hooks *Hooks
 	Out   io.Writer
 	Err   io.Writer
+	// CompactThreshold is an estimated token count. Above it, older turns are
+	// summarized before the next model call. 0 disables compaction.
+	CompactThreshold int
+	// Verify commands run on the local machine after a successful edit.
+	// VerifyRunner executes them. It stays local even when bash uses Docker:
+	// these commands are the user's toolchain, not the model's shell.
+	Verify        []string
+	VerifyRunner  sandbox.Runner
+	VerifyTimeout time.Duration
 }
 
 // RunTurn appends one user message and loops until the model stops calling
@@ -62,6 +73,9 @@ func (a *Agent) RunTurn(ctx context.Context, userText string) error {
 	}
 	for step := 1; step <= maxSteps; step++ {
 		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := a.compact(ctx); err != nil {
 			return err
 		}
 		a.step(step, maxSteps)
@@ -118,6 +132,7 @@ func (a *Agent) RunTurn(ctx context.Context, userText string) error {
 		if len(calls) == 0 {
 			return nil
 		}
+		edited := false
 		for i, call := range calls {
 			output, stop := a.execCall(ctx, call)
 			if err := a.append(provider.Message{
@@ -127,6 +142,9 @@ func (a *Agent) RunTurn(ctx context.Context, userText string) error {
 				Content:    output,
 			}); err != nil {
 				return err
+			}
+			if !stop && (call.Name == "edit_file" || call.Name == "write_file") && !strings.HasPrefix(output, "Error:") {
+				edited = true
 			}
 			if stop {
 				// The transcript must stay valid: every tool call needs a result.
@@ -145,6 +163,11 @@ func (a *Agent) RunTurn(ctx context.Context, userText string) error {
 					}
 				}
 				return ctx.Err()
+			}
+		}
+		if edited {
+			if err := a.verify(ctx); err != nil {
+				return err
 			}
 		}
 	}

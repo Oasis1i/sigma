@@ -21,9 +21,11 @@ import (
 )
 
 const (
-	TypeMeta     = "meta"
-	TypeMessage  = "message"
-	TypeApproval = "approval"
+	TypeMeta       = "meta"
+	TypeMessage    = "message"
+	TypeApproval   = "approval"
+	TypeCompaction = "compaction"
+	TypeCheckpoint = "checkpoint"
 )
 
 // Approval is one allow or deny decision.
@@ -36,13 +38,32 @@ type Approval struct {
 	Remember bool   `json:"remember,omitempty"`
 }
 
+// Compaction records that older turns were replaced by a summary. The log
+// stays append-only: Messages rebuilds the shortened conversation by applying
+// these events instead of deleting the earlier lines.
+type Compaction struct {
+	Summary   string `json:"summary"`
+	Keep      int    `json:"keep"`
+	Dropped   int    `json:"dropped,omitempty"`
+	Estimated int    `json:"estimated_tokens,omitempty"`
+}
+
+// Checkpoint records a git snapshot or an undo. The commits themselves live
+// under refs/sigma/ and are not on the user's branch.
+type Checkpoint struct {
+	Action string `json:"action"`
+	Ref    string `json:"ref,omitempty"`
+}
+
 // Event is one JSONL record.
 type Event struct {
-	Time     time.Time         `json:"ts"`
-	Type     string            `json:"type"`
-	Message  *provider.Message `json:"message,omitempty"`
-	Approval *Approval         `json:"approval,omitempty"`
-	Meta     map[string]string `json:"meta,omitempty"`
+	Time       time.Time         `json:"ts"`
+	Type       string            `json:"type"`
+	Message    *provider.Message `json:"message,omitempty"`
+	Approval   *Approval         `json:"approval,omitempty"`
+	Compaction *Compaction       `json:"compaction,omitempty"`
+	Checkpoint *Checkpoint       `json:"checkpoint,omitempty"`
+	Meta       map[string]string `json:"meta,omitempty"`
 }
 
 // Session is an open log file.
@@ -147,10 +168,17 @@ func (s *Session) AppendMessage(m provider.Message) error {
 	return s.append(Event{Type: TypeMessage, Message: &msg})
 }
 
-// AppendApproval writes an approval decision.
-func (s *Session) AppendApproval(a Approval) error {
-	item := a
-	return s.append(Event{Type: TypeApproval, Approval: &item})
+// AppendCompaction writes a summary boundary. The summarized messages stay
+// in the file; Messages hides them behind the summary.
+func (s *Session) AppendCompaction(c Compaction) error {
+	item := c
+	return s.append(Event{Type: TypeCompaction, Compaction: &item})
+}
+
+// AppendCheckpoint writes a snapshot or undo note.
+func (s *Session) AppendCheckpoint(c Checkpoint) error {
+	item := c
+	return s.append(Event{Type: TypeCheckpoint, Checkpoint: &item})
 }
 
 func (s *Session) append(e Event) error {
@@ -177,22 +205,73 @@ func (s *Session) Events() ([]Event, error) {
 	return ReadEvents(s.Path)
 }
 
-// Messages rebuilds the conversation the model should see. A later system
-// prompt replaces the first one, so a mode change can update "Approval mode:"
-// without adding a turn. Mode-change notes that older builds stored as user
-// messages are dropped.
+// AppendApproval writes an approval decision.
+func (s *Session) AppendApproval(a Approval) error {
+	item := a
+	return s.append(Event{Type: TypeApproval, Approval: &item})
+}
+
+// Messages rebuilds the conversation the model should see. Compaction events
+// replace everything before them with the summary plus the kept tail, then
+// later message events continue from there. A later system prompt replaces
+// the first one, and old mode-change user notes are dropped.
 func (s *Session) Messages() ([]provider.Message, error) {
 	events, err := s.Events()
 	if err != nil {
 		return nil, err
 	}
+	return MessagesFrom(events), nil
+}
+
+// MessagesFrom applies message and compaction events in order.
+func MessagesFrom(events []Event) []provider.Message {
 	var out []provider.Message
 	for _, e := range events {
-		if e.Type == TypeMessage && e.Message != nil {
-			out = AppendFolded(out, *e.Message)
+		switch e.Type {
+		case TypeMessage:
+			if e.Message != nil {
+				out = AppendFolded(out, *e.Message)
+			}
+		case TypeCompaction:
+			if e.Compaction != nil {
+				out = ApplyCompaction(out, *e.Compaction)
+			}
 		}
 	}
-	return out, nil
+	return out
+}
+
+// ApplyCompaction keeps the leading system message, appends a summary pair,
+// and keeps the last c.Keep non-system messages. head messages are dropped
+// from the slice the model sees. They remain in the JSONL file.
+func ApplyCompaction(msgs []provider.Message, c Compaction) []provider.Message {
+	var system []provider.Message
+	rest := msgs
+	if len(msgs) > 0 && msgs[0].Role == "system" {
+		system = append(system, msgs[0])
+		rest = msgs[1:]
+	}
+	keep := c.Keep
+	if keep < 0 {
+		keep = 0
+	}
+	if keep > len(rest) {
+		keep = len(rest)
+	}
+	tail := append([]provider.Message(nil), rest[len(rest)-keep:]...)
+	out := append([]provider.Message(nil), system...)
+	out = append(out, SummaryMessages(c.Summary)...)
+	out = append(out, tail...)
+	return out
+}
+
+// SummaryMessages is the pair inserted where older turns used to be. The
+// assistant line gives the next model call a normal user/assistant rhythm.
+func SummaryMessages(summary string) []provider.Message {
+	return []provider.Message{
+		{Role: "user", Content: "Summary of the earlier conversation:\n\n" + strings.TrimSpace(summary)},
+		{Role: "assistant", Content: "I have the summary and will continue from it."},
+	}
 }
 
 // AppendFolded adds one logged message to the model transcript.

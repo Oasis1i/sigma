@@ -20,6 +20,7 @@ import (
 
 	"github.com/Oasis1i/sigma/internal/agent"
 	"github.com/Oasis1i/sigma/internal/approval"
+	"github.com/Oasis1i/sigma/internal/checkpoint"
 	"github.com/Oasis1i/sigma/internal/config"
 	"github.com/Oasis1i/sigma/internal/engine"
 	"github.com/Oasis1i/sigma/internal/prompt"
@@ -233,7 +234,7 @@ func run(args []string) error {
 			sess.Close()
 			return err
 		}
-		sys := prompt.Build(cfg.Workspace, cfg.Approval, sections)
+		sys := prompt.Build(cfg.Workspace, cfg.Approval, sections, cfg.Verify)
 		messages = []provider.Message{{Role: "system", Content: sys}}
 		if err := sess.AppendMessage(messages[0]); err != nil {
 			sess.Close()
@@ -241,22 +242,35 @@ func run(args []string) error {
 		}
 	}
 
+	local := &sandbox.Local{Dir: cfg.Workspace}
+	runner, err := newRunner(cfg, local)
+	if err != nil {
+		sess.Close()
+		return err
+	}
+	cp := &checkpoint.Store{Dir: cfg.Workspace, Session: sess.ID}
 	eng := engine.New(&agent.Agent{
 		Client: provider.NewOpenAI(cfg.BaseURL, cfg.APIKey, cfg.Model, nil),
 		Registry: tools.NewRegistry(&tools.Env{
 			Workspace:   cfg.Workspace,
-			Runner:      &sandbox.Local{Dir: cfg.Workspace},
+			Runner:      runner,
 			BashTimeout: time.Duration(cfg.BashTimeoutSec) * time.Second,
 		}),
-		Policy:   policy,
-		Session:  sess,
-		Messages: messages,
-		MaxSteps: cfg.MaxSteps,
+		Policy:           policy,
+		Session:          sess,
+		Messages:         messages,
+		MaxSteps:         cfg.MaxSteps,
+		CompactThreshold: cfg.CompactThreshold,
+		Verify:           cfg.Verify,
+		VerifyRunner:     local,
+		VerifyTimeout:    time.Duration(cfg.BashTimeoutSec) * time.Second,
 	}, engine.Options{
-		SessionDir: dir,
-		Model:      cfg.Model,
-		BaseURL:    cfg.BaseURL,
-		Workspace:  cfg.Workspace,
+		SessionDir:  dir,
+		Model:       cfg.Model,
+		BaseURL:     cfg.BaseURL,
+		Workspace:   cfg.Workspace,
+		Verify:      cfg.Verify,
+		Checkpoints: cp,
 	})
 	defer eng.Close()
 
@@ -322,5 +336,18 @@ func newSigLoop(eng *engine.Engine) *sigLoop {
 func (s *sigLoop) beginTurn() {
 	if s != nil {
 		s.hits.Store(0)
+	}
+}
+
+// newRunner picks where bash runs. local is always the verify runner; docker
+// replaces only the model's bash tool. Approval is unchanged either way.
+func newRunner(cfg config.Config, local *sandbox.Local) (sandbox.Runner, error) {
+	switch cfg.Sandbox {
+	case "", "local":
+		return local, nil
+	case "docker":
+		return &sandbox.Docker{Image: cfg.DockerImage, Dir: cfg.Workspace}, nil
+	default:
+		return nil, fmt.Errorf("unknown sandbox %q", cfg.Sandbox)
 	}
 }
