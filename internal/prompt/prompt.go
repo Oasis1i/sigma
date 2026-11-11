@@ -19,8 +19,9 @@ type Section struct {
 	Body   string
 }
 
-// Build returns the system prompt for one run.
-func Build(workspace, mode string, sections []Section) string {
+// Build returns the system prompt for one run. verify is the list of
+// commands that run after an edit; an empty list omits that paragraph.
+func Build(workspace, mode string, sections []Section, verify []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, `You are Sigma, a coding agent working in a local workspace. Complete the user's task by calling tools. When the task is done, reply with a short summary and do not call any tools.
 
@@ -50,6 +51,13 @@ Guidelines:
 		b.WriteString("Mutating tools may wait for the user to approve them before they run.\n")
 	case "auto":
 		b.WriteString("Mutating tools run when the approval rules allow them.\n")
+	}
+
+	if len(verify) > 0 {
+		b.WriteString("\nAfter a successful edit_file or write_file, these commands run automatically. If one fails, the output is sent back to you. Fix the cause before you finish.\n")
+		for _, cmd := range verify {
+			fmt.Fprintf(&b, "- %s\n", strings.TrimSpace(cmd))
+		}
 	}
 
 	for _, s := range sections {

@@ -33,14 +33,14 @@ func TestBuildIncludesAgents(t *testing.T) {
 	if len(sections) != 2 {
 		t.Fatalf("sections: %+v", sections)
 	}
-	text := Build(ws, "ask", sections)
+	text := Build(ws, "ask", sections, nil)
 	if !strings.Contains(text, "be brief") || !strings.Contains(text, "run the tests") {
 		t.Fatalf("prompt missing AGENTS.md:\n%s", text)
 	}
 	if !strings.Contains(text, "old_string") || !strings.Contains(text, ws) {
 		t.Fatalf("prompt missing tool guidance:\n%s", text)
 	}
-	plan := Build(ws, "plan", nil)
+	plan := Build(ws, "plan", nil, nil)
 	if !strings.Contains(plan, "read-only") {
 		t.Fatal(plan)
 	}

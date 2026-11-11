@@ -146,3 +146,47 @@ func TestExampleConfigParses(t *testing.T) {
 		t.Fatalf("example rules: %+v", cfg.Rules)
 	}
 }
+
+func TestV2Settings(t *testing.T) {
+	isolate(t)
+	ws := t.TempDir()
+	cfg, err := Load(Overrides{
+		Workspace: ws,
+		Model:     "m", ModelSet: true,
+		BaseURL: "http://example.test/v1", BaseURLSet: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CompactThreshold != DefaultCompactThreshold || cfg.Sandbox != "local" || len(cfg.Verify) != 0 {
+		t.Fatalf("defaults %+v", cfg)
+	}
+
+	write(t, filepath.Join(ws, ".sigma.toml"), `
+model = "m"
+base_url = "http://example.test/v1"
+compact_threshold = 0
+sandbox = "docker"
+docker_image = "golang:1.22"
+verify = ["go test ./..."]
+`)
+	cfg, err = Load(Overrides{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CompactThreshold != 0 || cfg.Sandbox != "docker" || cfg.DockerImage != "golang:1.22" {
+		t.Fatalf("%+v", cfg)
+	}
+	if len(cfg.Verify) != 1 || cfg.Verify[0] != "go test ./..." {
+		t.Fatalf("verify %+v", cfg.Verify)
+	}
+
+	write(t, filepath.Join(ws, ".sigma.toml"), `
+model = "m"
+base_url = "http://example.test/v1"
+sandbox = "docker"
+`)
+	if _, err := Load(Overrides{Workspace: ws}); err == nil {
+		t.Fatal("docker without an image should fail")
+	}
+}

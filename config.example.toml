@@ -12,6 +12,19 @@ approval_mode = "ask"
 max_steps = 50
 bash_timeout_seconds = 120
 
+# 0 disables. Otherwise this is an estimated token count (about 4 characters
+# each). Above it, older turns are summarized and the recent ones are kept.
+compact_threshold = 80000
+
+# local runs bash on this machine. docker runs it in a container. The image
+# must provide bash. Approval rules are the same either way.
+sandbox = "local"
+# docker_image = "golang:1.22"
+
+# Commands run after a successful edit_file or write_file. A non-zero exit
+# is shown to the model so it can fix the failure. Leave this unset to skip.
+# verify = ["go vet ./...", "go test ./..."]
+
 # Rules match on "tool" or "tool:argument".
 # * is a glob that matches any text, including slashes and spaces.
 # Matching does not follow the order of this list. Every matching deny

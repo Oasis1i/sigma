@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 
 	"github.com/Oasis1i/sigma/internal/agent"
+	"github.com/Oasis1i/sigma/internal/checkpoint"
 	"github.com/Oasis1i/sigma/internal/prompt"
 	"github.com/Oasis1i/sigma/internal/provider"
 	"github.com/Oasis1i/sigma/internal/session"
@@ -20,6 +21,11 @@ type Options struct {
 	Model      string
 	BaseURL    string
 	Workspace  string
+	// Verify is copied into a fresh system prompt on /clear.
+	Verify []string
+	// Checkpoints is optional. Nil disables snapshots, including outside a
+	// git repository where the store reports itself unavailable.
+	Checkpoints *checkpoint.Store
 }
 
 // Engine owns one agent and the goroutines around it.
@@ -36,6 +42,8 @@ type Engine struct {
 	model     string
 	baseURL   string
 	workspace string
+	verify    []string
+	cp        *checkpoint.Store
 
 	events   chan Event
 	cmds     chan Command
@@ -70,6 +78,8 @@ func New(ag *agent.Agent, opt Options) *Engine {
 		model:      opt.Model,
 		baseURL:    opt.BaseURL,
 		workspace:  opt.Workspace,
+		verify:     append([]string(nil), opt.Verify...),
+		cp:         opt.Checkpoints,
 		events:     make(chan Event, 128),
 		cmds:       make(chan Command, 32),
 		decision:   make(chan decision, 1),
@@ -335,6 +345,9 @@ func (e *Engine) swapSession(sess *session.Session, messages []provider.Message)
 	}
 	e.ag.Session = sess
 	e.ag.Messages = messages
+	if e.cp != nil {
+		e.cp.SetSession(sess.ID)
+	}
 	e.mu.Lock()
 	e.promptTokens = 0
 	e.completionTokens = 0
@@ -346,7 +359,7 @@ func (e *Engine) systemPrompt() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return prompt.Build(e.workspace, e.Mode(), sections), nil
+	return prompt.Build(e.workspace, e.Mode(), sections, e.verify), nil
 }
 
 func (e *Engine) loop() {
@@ -391,6 +404,7 @@ func (e *Engine) startTurn(text string) {
 	e.mu.Unlock()
 
 	go func() {
+		e.snapshot(ctx)
 		err := e.ag.RunTurn(ctx, text)
 		e.mu.Lock()
 		e.busy = false
@@ -450,6 +464,38 @@ func (e *Engine) deliver(cmd Command) {
 	case e.decision <- decision{allow: cmd.Allow, always: cmd.Always}:
 	default:
 	}
+}
+
+func (e *Engine) snapshot(ctx context.Context) {
+	if e.cp == nil || !e.cp.Enabled(ctx) {
+		return
+	}
+	ref, err := e.cp.Snapshot(ctx)
+	if err != nil {
+		e.emit(Event{Kind: KindNotice, Text: "checkpoint skipped: " + err.Error()})
+		return
+	}
+	e.emit(Event{Kind: KindNotice, Text: "checkpoint " + ref})
+	if e.ag.Session != nil {
+		_ = e.ag.Session.AppendCheckpoint(session.Checkpoint{Action: "snapshot", Ref: ref})
+	}
+}
+
+func (e *Engine) undo() (SlashEffect, error) {
+	if e.Busy() {
+		return SlashEffect{}, fmt.Errorf("wait for the current turn to finish")
+	}
+	if e.cp == nil || !e.cp.Enabled(context.Background()) {
+		return SlashEffect{Notice: "undo is unavailable outside a git repository"}, nil
+	}
+	ref, err := e.cp.Undo(context.Background())
+	if err != nil {
+		return SlashEffect{}, err
+	}
+	if e.ag.Session != nil {
+		_ = e.ag.Session.AppendCheckpoint(session.Checkpoint{Action: "undo", Ref: ref})
+	}
+	return SlashEffect{Notice: "restored " + ref}, nil
 }
 
 func (e *Engine) emit(ev Event) {
