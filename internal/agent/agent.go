@@ -20,10 +20,14 @@ import (
 	"github.com/Oasis1i/sigma/internal/tools"
 )
 
-// AskFunc prompts the user for a call the policy classified as ask.
+// AskFunc prompts for a call the policy classified as ask.
 // allow is whether this call may run. always remembers the tool name for
 // the rest of the session; it does not override deny rules.
-type AskFunc func(tool, arg string) (allow bool, always bool, err error)
+//
+// ctx is the turn context. A UI that blocks inside Ask must return when ctx
+// is canceled, or Ctrl-C cannot interrupt a prompt. The engine does this by
+// waiting on a command instead of reading stdin here.
+type AskFunc func(ctx context.Context, tool, arg string) (allow bool, always bool, err error)
 
 // Agent runs turns against one workspace.
 type Agent struct {
@@ -34,9 +38,12 @@ type Agent struct {
 	Messages []provider.Message
 	MaxSteps int
 	Ask      AskFunc
-	// Out receives assistant text. Err receives steps, tool traces, and denials.
-	Out io.Writer
-	Err io.Writer
+	// Hooks receives the same facts a UI renders. The engine sets this.
+	// Out and Err remain for a caller that drives RunTurn directly: Out is
+	// assistant text, Err is steps, tool traces, and denials.
+	Hooks *Hooks
+	Out   io.Writer
+	Err   io.Writer
 }
 
 // RunTurn appends one user message and loops until the model stops calling
@@ -57,24 +64,40 @@ func (a *Agent) RunTurn(ctx context.Context, userText string) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		a.status("· step %d/%d\n", step, maxSteps)
+		a.step(step, maxSteps)
+		// streamed counts bytes delivered through onDelta. A provider that
+		// returns the whole reply at once and never calls onDelta still needs
+		// the text to reach the UI, so we send it after Complete in that case.
+		var streamed int
 		resp, err := a.Client.Complete(ctx, a.Messages, a.toolSpecs(), func(delta string) {
-			if a.Out != nil && delta != "" {
+			if delta == "" {
+				return
+			}
+			streamed += len(delta)
+			if a.Out != nil {
 				fmt.Fprint(a.Out, delta)
 			}
+			a.Hooks.textDelta(delta)
 		})
 		if err != nil {
 			return err
 		}
+		if streamed == 0 && resp.Content != "" {
+			if a.Out != nil {
+				fmt.Fprint(a.Out, resp.Content)
+			}
+			a.Hooks.textDelta(resp.Content)
+		}
 		if a.Out != nil && resp.Content != "" && !strings.HasSuffix(resp.Content, "\n") {
 			fmt.Fprintln(a.Out)
 		}
+		a.Hooks.usage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
 
 		calls := resp.ToolCalls
 		if len(calls) == 0 {
 			calls = bashFences(resp.Content)
 			if len(calls) > 0 {
-				a.status("· no native tool call; using a fenced bash block\n")
+				a.notice("no native tool call; using a fenced bash block")
 			}
 		}
 		for i := range calls {
@@ -107,7 +130,11 @@ func (a *Agent) RunTurn(ctx context.Context, userText string) error {
 			}
 			if stop {
 				// The transcript must stay valid: every tool call needs a result.
+				// The UI also needs a finished event, or the block stays "running".
 				for _, rest := range calls[i+1:] {
+					ev := a.toolEvent(rest, "Error: interrupted", true)
+					a.Hooks.toolStart(ev)
+					a.Hooks.toolEnd(ev)
 					if err := a.append(provider.Message{
 						Role:       "tool",
 						Name:       rest.Name,
@@ -134,11 +161,21 @@ func (a *Agent) Note(text string) error {
 }
 
 func (a *Agent) execCall(ctx context.Context, call provider.ToolCall) (output string, stop bool) {
+	ev := a.toolEvent(call, "", false)
 	if err := ctx.Err(); err != nil {
-		return "Error: interrupted", true
+		ev.Output = "Error: interrupted"
+		ev.Failed = true
+		a.Hooks.toolStart(ev)
+		a.Hooks.toolEnd(ev)
+		return ev.Output, true
 	}
+	// Announce the call before approval so a UI can show the command that is
+	// waiting for y/n. The decision comes back through Ask, which the engine
+	// implements by blocking on a command.
+	a.Hooks.toolStart(ev)
+
 	spec, known := a.Registry.Get(call.Name)
-	arg := argumentPreview(call)
+	arg := ev.Preview
 	var dec approval.Decision
 	if !known {
 		dec = approval.Decision{Action: approval.Deny, Reason: "unknown tool"}
@@ -149,14 +186,20 @@ func (a *Agent) execCall(ctx context.Context, call provider.ToolCall) (output st
 	if dec.Action == approval.Ask {
 		if a.Ask == nil {
 			dec.Action = approval.Deny
-			dec.Reason = "approval required but input is not a terminal"
+			dec.Reason = "approval required but no approver is configured"
 		} else {
-			allow, always, err := a.Ask(call.Name, arg)
+			allow, always, err := a.Ask(ctx, call.Name, arg)
 			if err != nil {
 				if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-					return "Error: interrupted", true
+					ev.Output = "Error: interrupted"
+					ev.Failed = true
+					a.Hooks.toolEnd(ev)
+					return ev.Output, true
 				}
-				return "Error: " + err.Error(), false
+				ev.Output = "Error: " + err.Error()
+				ev.Failed = true
+				a.Hooks.toolEnd(ev)
+				return ev.Output, false
 			}
 			if allow {
 				dec.Action = approval.Allow
@@ -174,24 +217,50 @@ func (a *Agent) execCall(ctx context.Context, call provider.ToolCall) (output st
 	}
 	a.logApproval(call.Name, arg, dec, remember)
 	if dec.Action != approval.Allow {
+		var msg string
 		if dec.Rule != "" {
 			a.status("· denied %s (%s: %s)\n", call.Name, dec.Reason, dec.Rule)
-			return fmt.Sprintf("Error: denied by rule %q (%s)", dec.Rule, dec.Reason), false
+			msg = fmt.Sprintf("Error: denied by rule %q (%s)", dec.Rule, dec.Reason)
+		} else {
+			a.status("· denied %s (%s)\n", call.Name, dec.Reason)
+			msg = fmt.Sprintf("Error: denied (%s)", dec.Reason)
 		}
-		a.status("· denied %s (%s)\n", call.Name, dec.Reason)
-		return fmt.Sprintf("Error: denied (%s)", dec.Reason), false
+		ev.Output = msg
+		ev.Failed = true
+		a.Hooks.toolEnd(ev)
+		return msg, false
 	}
 
 	a.status("· %s %s\n", call.Name, oneLine(arg, 120))
 	out, err := a.Registry.Execute(ctx, call.Name, json.RawMessage(call.Arguments))
 	if ctx.Err() != nil {
-		return "Error: interrupted", true
+		ev.Output = "Error: interrupted"
+		ev.Failed = true
+		a.Hooks.toolEnd(ev)
+		return ev.Output, true
 	}
 	if err != nil {
 		a.status("· %s error: %s\n", call.Name, oneLine(err.Error(), 200))
-		return "Error: " + err.Error(), false
+		ev.Output = "Error: " + err.Error()
+		ev.Failed = true
+		a.Hooks.toolEnd(ev)
+		return ev.Output, false
 	}
+	ev.Output = out
+	a.Hooks.toolEnd(ev)
 	return out, false
+}
+
+func (a *Agent) toolEvent(call provider.ToolCall, output string, failed bool) ToolEvent {
+	return ToolEvent{
+		ID:      call.ID,
+		Name:    call.Name,
+		Args:    call.Arguments,
+		Preview: argumentPreview(call),
+		Output:  output,
+		Diff:    ToolDiff(call.Name, call.Arguments),
+		Failed:  failed,
+	}
 }
 
 func (a *Agent) logApproval(tool, arg string, dec approval.Decision, remember bool) {
@@ -240,6 +309,23 @@ func (a *Agent) status(format string, args ...any) {
 		return
 	}
 	fmt.Fprintf(a.Err, format, args...)
+}
+
+func (a *Agent) step(n, max int) {
+	a.status("· step %d/%d\n", n, max)
+	a.Hooks.step(n, max)
+}
+
+func (a *Agent) notice(text string) {
+	a.status("· %s\n", text)
+	a.Hooks.notice(text)
+}
+
+// ArgumentPreview is the string approval rules match: the bash command, or
+// the path. UIs use it when they rebuild a transcript from the session log,
+// where the live event's Preview field is not stored.
+func ArgumentPreview(name, arguments string) string {
+	return argumentPreview(provider.ToolCall{Name: name, Arguments: arguments})
 }
 
 // argumentPreview is the string rules match against: the bash command, or the path.

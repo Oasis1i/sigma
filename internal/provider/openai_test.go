@@ -31,6 +31,7 @@ func TestStreamingToolCall(t *testing.T) {
 		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\n")
 		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"ba\",\"arguments\":\"\"}}]}}]}\n\n")
 		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"sh\",\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\"}}]}}]}\n\n")
+		io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n")
 		io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
@@ -58,6 +59,9 @@ func TestStreamingToolCall(t *testing.T) {
 	}
 	if resp.ToolCalls[0].Arguments != `{"command":"ls"}` {
 		t.Fatalf("args %s", resp.ToolCalls[0].Arguments)
+	}
+	if resp.Usage.TotalTokens != 5 || resp.Usage.PromptTokens != 3 || resp.Usage.CompletionTokens != 2 {
+		t.Fatalf("usage %+v", resp.Usage)
 	}
 }
 
