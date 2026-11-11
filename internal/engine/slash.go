@@ -18,6 +18,7 @@ const SlashHelp = `Commands:
   /undo                 restore the previous git checkpoint
   /mcp                  list MCP servers and tools
   /model [name]         show or switch the model
+  /provider <name>      switch subscription or API provider
   /exit, /quit          leave
 `
 
@@ -71,6 +72,18 @@ func (e *Engine) ApplySlash(line string) (SlashEffect, error) {
 		return SlashEffect{Notice: "new session " + id, Rebuild: true}, nil
 	case "/undo":
 		return e.undo()
+	case "/provider":
+		if len(fields) == 1 {
+			return SlashEffect{Notice: "provider: " + e.ProviderName() + "\nmodel: " + e.ModelName()}, nil
+		}
+		model := ""
+		if len(fields) > 2 {
+			model = strings.Join(fields[2:], " ")
+		}
+		if err := e.Use(fields[1], model); err != nil {
+			return SlashEffect{}, err
+		}
+		return SlashEffect{Notice: "provider: " + e.ProviderName() + "\nmodel: " + e.ModelName()}, nil
 	case "/model":
 		if len(fields) == 1 {
 			list := e.Models()

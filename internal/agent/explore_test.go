@@ -66,6 +66,39 @@ func TestExploreReturnsSummaryAndStaysReadOnly(t *testing.T) {
 	}
 }
 
+func TestExploreUsesSeparateClient(t *testing.T) {
+	parent := &provider.Scripted{Responses: []provider.Response{{Content: "parent"}}}
+	child := &provider.Scripted{Responses: []provider.Response{{Content: "from the child"}}}
+	policy, err := approval.New("plan", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := &tools.Env{Workspace: t.TempDir()}
+	ag := &Agent{
+		Client:           parent,
+		ExploreClient:    child,
+		Registry:         tools.NewRegistry(env),
+		Policy:           policy,
+		MaxSteps:         2,
+		ExploreMaxSteps:  2,
+		ExploreMaxTokens: 8000,
+		Hooks:            &Hooks{},
+	}
+	summary, err := ag.Explore(context.Background(), "look")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(summary, "from the child") {
+		t.Fatal(summary)
+	}
+	if len(parent.Seen) != 0 {
+		t.Fatal("parent client was called")
+	}
+	if len(child.Seen) == 0 {
+		t.Fatal("child client was not called")
+	}
+}
+
 func TestExploreStopsAtTokenBudget(t *testing.T) {
 	script := &provider.Scripted{Responses: []provider.Response{
 		{ToolCalls: []provider.ToolCall{{ID: "p1", Name: "task", Arguments: `{"task":"find add"}`}}},

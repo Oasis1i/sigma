@@ -22,10 +22,42 @@ html, body {
   color: var(--text);
 }
 
-button, textarea {
+button, textarea, select, input {
   font: inherit;
   color: inherit;
 }
+
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px 0;
+}
+
+.picker label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.picker select, .picker input {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+
+#auth {
+  list-style: none;
+  margin: 8px 12px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#auth li.logged-in { color: var(--green); }
 
 #app {
   display: grid;

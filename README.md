@@ -262,6 +262,9 @@ If the model returns no native tool calls but writes a fenced `bash`, `sh`, or `
 | --- | --- | --- |
 | `openai` | `api_key` or `SIGMA_API_KEY` | `base_url` + `/chat/completions` (the default) |
 | `chatgpt` | `sigma login chatgpt` | `https://chatgpt.com/backend-api/codex/responses` |
+| `claude` | `sigma login claude` | `https://api.anthropic.com/v1/messages` |
+| `gemini` | `sigma login gemini` | `https://cloudcode-pa.googleapis.com/v1internal` |
+| `grok` | `sigma login grok`, or `api_key` | OAuth uses `https://cli-chat-proxy.grok.com/v1`. An API key uses `https://api.x.ai/v1` |
 
 ```bash
 sigma login chatgpt
@@ -273,19 +276,44 @@ The browser opens the Codex “Sign in with ChatGPT” page (`auth.openai.com`, 
 
 ChatGPT needs no extra opt-in. A request sends `Authorization`, `chatgpt-account-id` (from the token), `originator: codex_cli_rs`, and `OpenAI-Beta: responses=experimental`. The body is the Responses API (`instructions`, `input`, `tools`, `stream`, `store: false`), not chat completions. A 429 includes the reset time from `Retry-After` or `x-codex-primary-reset-at`.
 
-`/model` shows or switches the model. A `models` list in the config limits the names that are accepted. The same command works in the TUI.
+`/model` shows or switches the model. `/provider <name> [model]` switches vendor. A `models` list in the config limits names for the current provider. The TUI status line updates. The GUI sidebar has the same two controls and shows who is signed in, without tokens.
 
-Claude, Gemini, and Grok are named in the config so the opt-in flags parse, and `sigma login` can start their OAuth flows. Their request adapters are the next change. Claude, Gemini, and Grok OAuth refuse to start until `allow_subscription_risk = true` or `[subscription] <name> = true`. The warning is:
+Claude, Gemini, and a Grok OAuth login refuse to start until `allow_subscription_risk = true` or `[subscription] <name> = true`. Using them prints:
 
 > 警告：用第三方客户端调用该订阅可能违反服务商条款，账号有被封禁的风险。
 
-Suggested ChatGPT model names such as `gpt-5.3-codex` were taken from public Codex client builds. This tree has not confirmed them against a live subscription.
+**Claude.** `sigma login claude` is the Claude Code PKCE flow (`claude.ai/oauth/authorize`, token POST to `platform.claude.com/v1/oauth/token`, redirect `http://localhost:54545/callback`). Requests are Anthropic Messages with an OAuth bearer, `anthropic-version: 2023-06-01`, and `anthropic-beta: oauth-2025-04-20,prompt-caching-2024-07-31,claude-code-20250219`. Tool calls map to `tool_use` / `tool_result`. The system prompt and the last tool get `cache_control: ephemeral`. A 429 reads `anthropic-ratelimit-requests-reset` or `Retry-After`.
 
-Gemini's OAuth client id and secret are the installed-app credentials published by [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli). This repository does not vendor them: GitHub secret scanning rejects a push that contains that client id. Set `SIGMA_GEMINI_CLIENT_ID` and `SIGMA_GEMINI_CLIENT_SECRET` before `sigma login gemini`.
+**Gemini.** `sigma login gemini` is the Gemini CLI Google OAuth flow (loopback redirect, offline access). Set `SIGMA_GEMINI_CLIENT_ID` and `SIGMA_GEMINI_CLIENT_SECRET` first. Those installed-app credentials are published by [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli). This repository does not vendor them: GitHub secret scanning rejects a push that contains that client id. The first request calls `loadCodeAssist` and, when no project is returned, `onboardUser`, then `streamGenerateContent`. The project id is stored in the token file.
+
+**Grok.** `sigma login grok` discovers `https://auth.x.ai/.well-known/openid-configuration` and runs PKCE with the public Grok CLI client id. Chat then goes to `https://cli-chat-proxy.grok.com/v1` as OpenAI chat completions. That path needs the opt-in. If you are not logged in and `api_key` is set, Sigma calls `https://api.x.ai/v1` instead and does not print the warning. The API-key path is the one xAI documents. The OAuth chat proxy was not checked against a live login.
+
+A subagent can use another provider:
+
+```toml
+subagent_provider = "openai"
+subagent_model = "gpt-4o-mini"
+subagent_base_url = "https://api.openai.com/v1"
+subagent_api_key = "sk-..."
+```
+
+Leave those unset and `explore` / `task` use the parent client.
+
+Suggested model names (`gpt-5.3-codex`, `claude-sonnet`, `gemini-2.5-pro`, `grok-2`) come from public client builds. This tree has not confirmed them against a live subscription.
 
 ### 中文
 
-`provider = "openai"` 仍走原来的 OpenAI 兼容接口。`provider = "chatgpt"` 用 Codex 的 “Sign in with ChatGPT”：`sigma login chatgpt`，令牌在 `~/.config/sigma/auth/chatgpt.json`（0600），过期前自动刷新，401 时再刷新一次。请求打到 `https://chatgpt.com/backend-api/codex/responses`，带 `chatgpt-account-id` 和 `originator: codex_cli_rs`。没有真实账号时，这些请求头只在本地假服务器上验证过。`/model` 切换模型。Claude、Gemini、Grok 的登录命令已经接上，但调用适配器在下一项；这三家登录前必须打开 `allow_subscription_risk`，并会打印上面那句中文警告。
+`provider = "openai"` 仍走原来的 OpenAI 兼容接口，需要 `base_url` 和密钥。
+
+`chatgpt`：`sigma login chatgpt`。令牌在 `~/.config/sigma/auth/chatgpt.json`（0600），过期前自动刷新，401 再刷新一次。请求打到 Codex Responses 接口，带 `chatgpt-account-id` 和 `originator: codex_cli_rs`。不需要额外开关。
+
+`claude`：Claude Code 的 OAuth。请求是 `https://api.anthropic.com/v1/messages`，用 OAuth bearer，工具映射为 `tool_use` / `tool_result`，系统提示和最后一个工具带 `cache_control`。
+
+`gemini`：Gemini CLI 的 Google 登录，再走 Code Assist 的 `loadCodeAssist` / `onboardUser` / `streamGenerateContent`。客户端 id 和 secret 用环境变量 `SIGMA_GEMINI_CLIENT_ID`、`SIGMA_GEMINI_CLIENT_SECRET` 提供，仓库里不保存这对值。
+
+`grok`：有登录态时走 Grok CLI 的 OAuth 和 `cli-chat-proxy.grok.com`；没有登录态但配置了 `api_key` 时走官方的 `https://api.x.ai/v1`，后者不需要风险开关。
+
+`claude`、`gemini`，以及 `grok` 的 OAuth，必须先设置 `allow_subscription_risk = true` 或 `[subscription]` 里对应的开关，并会打印上面那句中文警告。`/model` 和 `/provider` 切换模型和服务商，网页侧栏有同样的下拉框和登录状态。`subagent_provider` 可以让只读子代理用另一家。没有真实账号时，以上请求形状只在本地假服务器上验证过。
 
 ## Sessions
 

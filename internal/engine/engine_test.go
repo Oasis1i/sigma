@@ -378,6 +378,24 @@ func TestSlashModeClearResume(t *testing.T) {
 	}
 }
 
+func TestUseProviderReplacesClient(t *testing.T) {
+	script := &provider.Scripted{Responses: []provider.Response{{Content: "ok"}}}
+	eng, _ := newEngine(t, "ask", script)
+	next := &provider.Scripted{}
+	eng.replace = func(name, model string) (provider.Client, error) {
+		if name != "claude" || model != "sonnet" {
+			t.Fatalf("replace %s %s", name, model)
+		}
+		return next, nil
+	}
+	if err := eng.Use("claude", "sonnet"); err != nil {
+		t.Fatal(err)
+	}
+	if eng.ProviderName() != "claude" || eng.ModelName() != "sonnet" || eng.ag.Client != next {
+		t.Fatalf("provider %s model %s", eng.ProviderName(), eng.ModelName())
+	}
+}
+
 func TestModelSwitch(t *testing.T) {
 	script := &provider.Scripted{Responses: []provider.Response{{Content: "ok"}}}
 	eng, _ := newEngine(t, "ask", script)

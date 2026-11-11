@@ -23,8 +23,12 @@ type Options struct {
 	SessionDir string
 	Model      string
 	Models     []string
+	Provider   string
 	BaseURL    string
-	Workspace  string
+	// Replace builds a client when /provider switches vendor. Nil means the
+	// session can change model but not provider.
+	Replace   func(providerName, model string) (provider.Client, error)
+	Workspace string
 	// Verify is copied into a fresh system prompt on /clear.
 	Verify []string
 	// Checkpoints is optional. Nil disables snapshots, including outside a
@@ -47,6 +51,8 @@ type Engine struct {
 	dir       string
 	model     string
 	models    []string
+	provider  string
+	replace   func(providerName, model string) (provider.Client, error)
 	baseURL   string
 	workspace string
 	verify    []string
@@ -89,6 +95,8 @@ func New(ag *agent.Agent, opt Options) *Engine {
 		dir:        opt.SessionDir,
 		model:      opt.Model,
 		models:     append([]string(nil), opt.Models...),
+		provider:   opt.Provider,
+		replace:    opt.Replace,
 		baseURL:    opt.BaseURL,
 		workspace:  opt.Workspace,
 		verify:     append([]string(nil), opt.Verify...),
@@ -212,6 +220,54 @@ func (e *Engine) ModelName() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.model
+}
+
+// ProviderName is the current provider id, such as openai or chatgpt.
+func (e *Engine) ProviderName() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.provider == "" {
+		return "openai"
+	}
+	return e.provider
+}
+
+// Use switches provider and model for the next turn. An empty provider keeps
+// the current one. An empty model keeps the current one. Switching vendor
+// needs Options.Replace.
+func (e *Engine) Use(providerName, model string) error {
+	if e.Busy() {
+		return fmt.Errorf("wait for the current turn to finish before changing model")
+	}
+	providerName = strings.TrimSpace(providerName)
+	model = strings.TrimSpace(model)
+	if providerName == "" {
+		providerName = e.ProviderName()
+	}
+	if model == "" {
+		model = e.ModelName()
+	}
+	if providerName == e.ProviderName() {
+		return e.SetModel(model)
+	}
+	if e.replace == nil {
+		return fmt.Errorf("this session cannot switch providers")
+	}
+	client, err := e.replace(providerName, model)
+	if err != nil {
+		return err
+	}
+	if sw, ok := client.(provider.ModelSwitch); ok && model != "" {
+		sw.SetModel(model)
+	}
+	if e.ag != nil {
+		e.ag.Client = client
+	}
+	e.mu.Lock()
+	e.provider = providerName
+	e.model = model
+	e.mu.Unlock()
+	return nil
 }
 
 // Models is the configured list /model offers. Empty means any name is accepted.

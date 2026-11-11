@@ -17,6 +17,22 @@
         </div>
       </header>
       <div id="workspace" class="workspace" title=""></div>
+      <div class="picker">
+        <label>Provider
+          <select id="provider">
+            <option value="openai">openai</option>
+            <option value="chatgpt">chatgpt</option>
+            <option value="claude">claude</option>
+            <option value="gemini">gemini</option>
+            <option value="grok">grok</option>
+          </select>
+        </label>
+        <label>Model
+          <input id="model-name" list="model-list" autocomplete="off">
+        </label>
+        <datalist id="model-list"></datalist>
+      </div>
+      <ul id="auth"></ul>
       <div class="mode" role="group" aria-label="Approval mode">
         <button type="button" data-mode="plan">plan</button>
         <button type="button" data-mode="ask">ask</button>

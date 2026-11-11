@@ -50,6 +50,10 @@ type file struct {
 	APIKey                string          `toml:"api_key"`
 	AllowSubscriptionRisk bool            `toml:"allow_subscription_risk"`
 	Subscription          map[string]bool `toml:"subscription"`
+	SubagentProvider      string          `toml:"subagent_provider"`
+	SubagentModel         string          `toml:"subagent_model"`
+	SubagentBaseURL       string          `toml:"subagent_base_url"`
+	SubagentAPIKey        string          `toml:"subagent_api_key"`
 	MaxSteps              int             `toml:"max_steps"`
 	BashTimeout           int             `toml:"bash_timeout_seconds"`
 	Approval              string          `toml:"approval_mode"`
@@ -77,12 +81,16 @@ type Config struct {
 	AllowSubscriptionRisk bool
 	// Subscription is a per-provider opt-in. A true value is enough for
 	// that provider even when AllowSubscriptionRisk is false.
-	Subscription   map[string]bool
-	MaxSteps       int
-	BashTimeoutSec int
-	Approval       string
-	Rules          []Rule
-	Workspace      string
+	Subscription     map[string]bool
+	SubagentProvider string
+	SubagentModel    string
+	SubagentBaseURL  string
+	SubagentAPIKey   string
+	MaxSteps         int
+	BashTimeoutSec   int
+	Approval         string
+	Rules            []Rule
+	Workspace        string
 	// CompactThreshold is an estimated token count. Above it, older turns are
 	// summarized. 0 disables compaction.
 	CompactThreshold int
@@ -239,6 +247,18 @@ func apply(cfg *Config, f file, md toml.MetaData) {
 		for name, on := range f.Subscription {
 			cfg.Subscription[strings.ToLower(strings.TrimSpace(name))] = on
 		}
+	}
+	if f.SubagentProvider != "" {
+		cfg.SubagentProvider = f.SubagentProvider
+	}
+	if f.SubagentModel != "" {
+		cfg.SubagentModel = f.SubagentModel
+	}
+	if f.SubagentBaseURL != "" {
+		cfg.SubagentBaseURL = f.SubagentBaseURL
+	}
+	if f.SubagentAPIKey != "" {
+		cfg.SubagentAPIKey = f.SubagentAPIKey
 	}
 	if f.APIKey != "" {
 		cfg.APIKey = f.APIKey

@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Oasis1i/sigma/internal/auth"
 	"github.com/Oasis1i/sigma/internal/engine"
 	"github.com/Oasis1i/sigma/internal/provider"
 	"github.com/Oasis1i/sigma/internal/tools"
@@ -177,6 +178,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/approval", s.authed(s.handleApproval))
 	mux.HandleFunc("POST /api/cancel", s.authed(s.handleCancel))
 	mux.HandleFunc("POST /api/mode", s.authed(s.handleMode))
+	mux.HandleFunc("POST /api/model", s.authed(s.handleModel))
 	mux.HandleFunc("POST /api/resume", s.authed(s.handleResume))
 	mux.HandleFunc("POST /api/clear", s.authed(s.handleClear))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -264,7 +266,10 @@ func originOK(r *http.Request) bool {
 
 type stateJSON struct {
 	Version          string             `json:"version"`
+	Provider         string             `json:"provider"`
 	Model            string             `json:"model"`
+	Models           []string           `json:"models,omitempty"`
+	Auth             []auth.Status      `json:"auth,omitempty"`
 	Mode             string             `json:"mode"`
 	Workspace        string             `json:"workspace"`
 	SessionID        string             `json:"session_id"`
@@ -282,7 +287,10 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, stateJSON{
 		Version:          s.version,
+		Provider:         s.eng.ProviderName(),
 		Model:            s.eng.ModelName(),
+		Models:           s.eng.Models(),
+		Auth:             authSnapshot(),
 		Mode:             s.eng.Mode(),
 		Workspace:        s.eng.Workspace(),
 		SessionID:        s.eng.SessionID(),
@@ -410,6 +418,41 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	s.eng.Cancel()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.eng.Use(body.Provider, body.Model); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"provider": s.eng.ProviderName(),
+		"model":    s.eng.ModelName(),
+	})
+}
+
+func authSnapshot() []auth.Status {
+	store, err := auth.DefaultStore()
+	if err != nil {
+		return nil
+	}
+	out := make([]auth.Status, 0, len(auth.Known()))
+	for _, name := range auth.Known() {
+		st, err := store.Status(name)
+		if err != nil {
+			continue
+		}
+		out = append(out, st)
+	}
+	return out
 }
 
 func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
