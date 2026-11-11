@@ -10,7 +10,7 @@ It is a learning project. The interesting pieces (the engine boundary, the agent
 
 Sigma 是一个用 Go 写的极简编码代理。它通过 OpenAI 兼容接口调用模型，在本地工作区里读文件、搜索、精确替换、写入和执行 bash。
 
-交互默认是 TUI（`sigma` 或 `sigma tui`）：可滚动的对话、Markdown 回复、可折叠的工具块（`edit_file` 会显示 diff）、底部状态栏和输入框。`sigma gui` 在 `127.0.0.1` 上打开本地网页，URL 里带一次性 token，别人连上端口也驱动不了代理。`/mode plan` 时模型只能读仓库并用 `todo_write` 给出计划，你批准后才按之前的审批模式执行。`explore`（也叫 `task`）会启动一个只读子代理，在自己的上下文里搜索并返回摘要。配置文件里的 `[[mcp]]` 可以接 stdio 或 HTTP 的 MCP 服务，工具名是 `mcp__服务器__工具`，默认仍走审批。`/mcp` 列出连接状态。`--plain` 保留原来的逐行 REPL，`-p` 仍然是执行一次后退出。
+交互默认是 TUI（`sigma` 或 `sigma tui`）：可滚动的对话、Markdown 回复、可折叠的工具块（`edit_file` 会显示 diff）、底部状态栏和输入框。`sigma gui` 在 `127.0.0.1` 上打开本地网页，URL 里带一次性 token，别人连上端口也驱动不了代理。`/mode plan` 时模型只能读仓库并用 `todo_write` 给出计划，你批准后才按之前的审批模式执行。`explore`（也叫 `task`）会启动一个只读子代理，在自己的上下文里搜索并返回摘要。配置文件里的 `[[mcp]]` 可以接 stdio 或 HTTP 的 MCP 服务，工具名是 `mcp__服务器__工具`，默认仍走审批。`/mcp` 列出连接状态。`--plain` 保留原来的逐行 REPL。`sigma -p "任务" --output json` 把这一轮收成一份 JSON（`jsonl` 则一行一个事件），方便脚本和评测。评测说明在 `eval/README.md`。
 
 在 `~/.config/sigma/config.toml` 或项目里的 `.sigma.toml` 中设置 `base_url`、`model` 和 `api_key`。没有默认模型；缺少模型或地址时程序会直接退出并说明原因。环境变量 `SIGMA_BASE_URL`、`SIGMA_MODEL`、`SIGMA_API_KEY` 以及对应的命令行参数会覆盖配置文件。
 
@@ -274,8 +274,10 @@ internal/checkpoint  hidden git snapshots and /undo
 internal/session     JSONL log
 internal/config      file, environment, flags
 internal/prompt      system prompt and AGENTS.md
-evals                small tasks and check scripts
-scripts/run-evals.sh runs those tasks; not used in CI
+internal/headless    -p --output json / jsonl report
+eval                 hidden-test tasks, SWE-bench driver, metrics
+evals                earlier task set
+scripts/run-evals.sh runs the earlier tasks; not used in CI
 ```
 
 ## Design notes
@@ -308,13 +310,17 @@ CI runs those three. Coverage includes edits, bash limits, approval order, sessi
 
 ## Evals
 
-`evals/` holds 15 small tasks. Each has a prompt, a fixture under `workspace/` when one is needed, and a `check.sh`. The runner copies the fixture to a temp directory and runs Sigma one-shot in auto mode:
+`eval/` is the harness used for headless runs. Details, including the Chinese notes, are in [eval/README.md](eval/README.md).
 
 ```bash
-scripts/run-evals.sh
+sigma --mode auto --output json -p "fix the test"
+eval/run.sh --dry-run
+python3 eval/swebench.py --dry-run --limit 2 --output /tmp/predictions.jsonl
 ```
 
-These tasks need a configured model, so they are not part of GitHub Actions.
+`eval/tasks/` has 15 small repos. Each `check.sh` stays outside the workspace the agent sees. `eval/run.sh` needs `SIGMA_BASE_URL` and `SIGMA_MODEL` (and `SIGMA_API_KEY` when the server requires one) and prints pass rate, steps, tokens, and edit-failure rate. `eval/swebench.py` writes `predictions.jsonl` for the official SWE-bench Docker harness. `--dry-run` checks the plumbing and does not call a model. `eval/baseline.py --dry-run` prints a mini-swe-agent command for the same ids. Do not commit `eval/results/`.
+
+`evals/` and `scripts/run-evals.sh` are the earlier task set. Those checks live inside the fixture. They also need a configured model and are not part of GitHub Actions.
 
 ## Roadmap
 
@@ -332,7 +338,7 @@ These tasks need a configured model, so they are not part of GitHub Actions.
 
 - ~~subagents and a richer plan mode~~ done (`explore` / `task`, `todo_write`, approve the plan, then execute)
 - ~~an MCP client~~ done (`[[mcp]]` stdio or streamable HTTP, `mcp__server__tool`, `/mcp`)
-- a SWE-bench Lite subset compared with mini-swe-agent
+- ~~a SWE-bench Lite subset compared with mini-swe-agent~~ harness in `eval/` (`--output json`, hidden-test tasks, `predictions.jsonl`, optional mini-swe-agent baseline). The Docker harness itself is not run here.
 
 ## Limitations
 

@@ -1,0 +1,1 @@
+config.txt has a port line. Change the port from 8080 to 9090. Do not change the host.

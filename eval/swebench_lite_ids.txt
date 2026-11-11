@@ -1,0 +1,34 @@
+# SWE-bench Lite instance ids. Pass a different file with --instances.
+# These are public ids from the Lite split. Sigma does not download the
+# dataset; --dataset points at a JSONL you already have. --dry-run uses
+# only this list and does not call a model.
+django__django-11099
+django__django-11133
+django__django-11400
+django__django-11815
+django__django-11964
+django__django-12125
+django__django-12286
+django__django-12453
+django__django-12708
+django__django-12983
+sympy__sympy-13480
+sympy__sympy-13647
+sympy__sympy-14774
+sympy__sympy-15017
+sympy__sympy-18199
+astropy__astropy-12907
+astropy__astropy-14182
+astropy__astropy-14365
+matplotlib__matplotlib-18869
+matplotlib__matplotlib-22711
+matplotlib__matplotlib-23299
+pylint-dev__pylint-5859
+pylint-dev__pylint-7080
+pytest-dev__pytest-5692
+scikit-learn__scikit-learn-10297
+scikit-learn__scikit-learn-13142
+sphinx-doc__sphinx-8595
+sphinx-doc__sphinx-8713
+pydata__xarray-4094
+psf__requests-1963
